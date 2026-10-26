@@ -1,6 +1,6 @@
 [package]
 name = "sjmr-cheque-writer"
-version = "2.2.0"
+version = "2.3.0"
 description = "Cheque writer and printer with a simple cheque list for SJMR"
 authors = ["SJMR Software"]
 edition = "2021"

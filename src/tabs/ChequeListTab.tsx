@@ -334,7 +334,7 @@ function DetailsDialog({ cheque, onClose, onMark, onChanged, onRemoved, onReprin
               const account = state.accounts.find((a) => a.id === cheque.accountId);
               if (!layout || !account) throw new Error("The bank layout of this cheque is not available. Print it again from Write & Print.");
               const cal = structuredClone(state.config.banks[cheque.accountId]?.calibration[layoutId] || defaultCalibration(layoutId));
-              const values = { number: cheque.chequeNo, payee: cheque.payee, amount: cheque.amount, date: cheque.chequeDate ?? state.today, blankDate: !cheque.chequeDate, crossed: true, crossing: ((cheque as Cheque & { crossing?: number }).crossing as 1 | 2 | 3) || 1, noBearer: false, payeeCaps: false, style: "spelled_fils" as const, wording: cheque.wording || null };
+              const values = { number: cheque.chequeNo, payee: cheque.payee, amount: cheque.amount, date: cheque.chequeDate ?? state.today, blankDate: !cheque.chequeDate, crossed: true, crossing: ((cheque as Cheque & { crossing?: number }).crossing as 1 | 2 | 3 | 4) || 1, noBearer: false, payeeCaps: false, style: "spelled_fils" as const, wording: cheque.wording || null };
               const result = await api.output({ action: "direct", request: engineRequest(layout, cal, values, { id: account.id, code: "", name: account.name, bankNo: account.bankNo }, cheque.currency), list: { accountId: cheque.accountId, layoutId } });
               onReprinted(result.cancelled ? "Reprint cancelled." : `Cheque ${cheque.chequeNo} printed again.`);
               await onChanged();

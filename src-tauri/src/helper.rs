@@ -90,9 +90,8 @@ fn run(args: Vec<String>, job: Option<String>, visible: bool, timeout_ms: u64, s
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            if !visible {
-                command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-            }
+            // Never a console window: the print dialog is its own window, and an empty black console in front of it hides it.
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
         let _ = visible;
         let mut child = command.spawn().map_err(|e| format!("Cannot start Windows printing: {e}"))?;

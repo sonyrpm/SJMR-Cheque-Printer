@@ -64,6 +64,19 @@ test("every piece of writing can be grabbed on its own in the preview", () => {
   assert.ok(v2.hitRegions.mmPayee[2] > field.left_mm + 100, "Arabic payee is written at the right end of its field");
 });
 
+test("crossing option 4 draws the two lines without any text; the date moves as one piece", () => {
+  setArabicFont(font);
+  const stamped = run({ CCT_CROSSING_OPTION: 1 }, "direct");
+  const linesOnly = run({ CCT_CROSSING_OPTION: 4 }, "direct");
+  const a = core.directJob(stamped.template, stamped.data, stamped.account, "a4_center_tray", "Landscape");
+  const b = core.directJob(linesOnly.template, linesOnly.data, linesOnly.account, "a4_center_tray", "Landscape");
+  assert.equal(b.lines.length, a.lines.length, "the two crossing lines stay");
+  assert.equal(b.texts.length, a.texts.length - 1, "only the A/C PAYEE ONLY text is gone");
+  assert.ok(!b.texts.some((t) => /A\/C PAYEE|NEGOTIABLE/.test(t.text)));
+  const moved = effectiveLayout(layouts.ADCB, { ...defaultCalibration(), offsets: Object.fromEntries(dragKeys("mmY3").map((k) => [k, { left_mm: 4, top_mm: 0 }])) });
+  for (const k of ["mmD1", "mmD2", "mmM1", "mmM2", "mmY1", "mmY4"]) if (layouts.ADCB.fields[k]) assert.equal(moved.fields[k].left_mm, layouts.ADCB.fields[k].left_mm + 4, `${k} moves with the date`);
+});
+
 test("a field key like 'constructor' cannot change the layout; the no-bearer mark can be moved even when the layout does not list it", () => {
   const moved = effectiveLayout(layouts.ADCB, { ...defaultCalibration(), offsets: { mmNoBearer: { left_mm: 1, top_mm: 1 }, constructor: { left_mm: 1, top_mm: 1 } } });
   assert.ok(moved.fields.mmNoBearer);
@@ -180,6 +193,28 @@ test("window: each field drags alone, Arabic cheque, test print, batch, undo, he
   assert.notEqual(await x("crossing"), before.cross, "the crossing moved");
   assert.equal(await x("mmAmount"), before.amount, "still the amount did not move");
   await h.shot("10-drag");
+
+  // ---- arrow buttons move one part each
+  const before2 = { date: await x("mmD1"), payee: await x("mmPayee"), amount: await x("mmAmount"), cross: await x("crossing") };
+  for (let i = 0; i < 4; i++) await page.getByRole("button", { name: "Move date right", exact: true }).click();
+  await page.waitForTimeout(700);
+  assert.ok((await x("mmD1")) > before2.date + 1, "the date moved right with its arrow");
+  assert.equal(await x("mmPayee"), before2.payee);
+  assert.equal(await x("mmAmount"), before2.amount);
+  assert.equal(await x("crossing"), before2.cross);
+  for (let i = 0; i < 4; i++) await page.getByRole("button", { name: "Move crossing left", exact: true }).click();
+  await page.waitForTimeout(700);
+  assert.ok((await x("crossing")) < before2.cross - 1, "the crossing moved left with its arrow");
+  const amountBefore = await x("mmAmount");
+  for (let i = 0; i < 4; i++) await page.getByRole("button", { name: "Move amount left", exact: true }).click();
+  await page.waitForTimeout(700);
+  assert.ok((await x("mmAmount")) < amountBefore - 1, "the amount moved with its arrow");
+  for (const part of ["payee", "words"]) await page.getByRole("button", { name: `Move ${part} up`, exact: true }).click();
+  // cross only: the two lines stay, the stamp text goes
+  await page.getByLabel("Security crossing").selectOption("4");
+  await page.waitForTimeout(700);
+  assert.ok(await page.locator('rect[data-field="crossing"]').count(), "the two lines are still there");
+  await h.shot("10b-cross-only");
 
   // ---- Arabic cheque
   await page.getByLabel("Cheque language").selectOption("ar");

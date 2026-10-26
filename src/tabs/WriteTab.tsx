@@ -12,6 +12,8 @@ import {
   dragKeys,
   dragLabel,
   engineRequest,
+  existingKeys,
+  MOVE_PARTS,
   moveFields,
   nextChequeNumber,
   type Calibration,
@@ -262,7 +264,7 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
     const box = e.currentTarget.getBoundingClientRect();
     const field = (e.target as SVGElement).getAttribute("data-field");
     // One field per drag: the one under the pointer. Empty space moves all the writing.
-    const keys = field ? dragKeys(field, e.shiftKey) : null;
+    const keys = field ? existingKeys(layout, dragKeys(field, e.shiftKey)) : null;
     drag.current = { x: e.clientX, y: e.clientY, w: box.width, h: box.height, cal: structuredClone(cal), key: keys ? keys.join(",") : "all" };
     setDragging(field ? dragLabel(field, e.shiftKey, !!preview.hitRegions.mmM1) : "all the writing");
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -447,12 +449,13 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
               <Tick label="Crossed cheque" value={values.crossed} onChange={(v) => setValue("crossed", v)} />
               {advanced && <Tick label="Strike bearer" value={values.noBearer} onChange={(v) => setValue("noBearer", v)} />}
             </div>
-            {advanced && (
+            {values.crossed && (
               <Field label="Security crossing">
                 <Select value={values.crossing} onChange={(e) => setValue("crossing", Number(e.target.value))}>
                   <option value={1}>A/C PAYEE ONLY</option>
                   <option value={2}>NOT NEGOTIABLE</option>
                   <option value={3}>A/C PAYEE ONLY — NOT NEGOTIABLE</option>
+                  <option value={4}>CROSS ONLY (two lines, no text)</option>
                 </Select>
               </Field>
             )}
@@ -498,21 +501,13 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
                 <p className="p-6 text-muted">Preparing the preview…</p>
               )}
               {!!preview?.outside.length && <Alert tone="warn">Writing extends beyond its available space: {preview.outside.join(", ")}. Adjust before printing.</Alert>}
-              {advanced && <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                <span className="flex items-center gap-1">
-                  <span className="text-xs font-medium">Move all</span>
-                  {([["←", -0.5, 0], ["↑", 0, -0.5], ["↓", 0, 0.5], ["→", 0.5, 0]] as const).map(([label, dx, dy]) => (
-                    <Button key={label} variant="secondary" className="min-h-7 px-2" aria-label={`Move all ${label}`} onClick={() => setCal((old) => ({ ...old, x: old.x + dx, y: old.y + dy }))}>{label}</Button>
-                  ))}
-                </span>
-                {([["payee", ["mmPayee"]], ["words", ["mmAmountText1", "mmAmountText2"]]] as [string, string[]][]).map(([label, keys]) => (
-                  <span key={label} className="flex items-center gap-1">
-                    <span className="text-xs font-medium">Move {label}</span>
-                    <Button variant="secondary" className="min-h-7 px-2" aria-label={`Move ${label} left`} onClick={() => setCal((old) => moveFields(old, keys, -0.5))}>←</Button>
-                    <Button variant="secondary" className="min-h-7 px-2" aria-label={`Move ${label} right`} onClick={() => setCal((old) => moveFields(old, keys, 0.5))}>→</Button>
-                  </span>
+              <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2" role="group" aria-label="Move with arrow buttons">
+                <MoveRow label="All writing" aria="all" onMove={(dx, dy) => setCal((old) => ({ ...old, x: old.x + dx, y: old.y + dy }))} />
+                {MOVE_PARTS.filter((p) => p.id !== "bearer" || values.noBearer).map((p) => (
+                  <MoveRow key={p.id} label={p.label} aria={p.id} onMove={(dx, dy) => setCal((old) => moveFields(old, existingKeys(layout, p.keys), dx, dy))} />
                 ))}
-              </div>}
+              </div>
+              <p className="text-xs text-muted">Each arrow moves 0.5 mm. Hold Shift to move 0.1 mm.</p>
             </Card>
             <Card className="space-y-2">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -619,6 +614,19 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
 }
 
 export type { EnginePrinter };
+
+/** One row of four arrow buttons: moves a part of the cheque left, up, down or right (Shift = a finer step). */
+function MoveRow({ label, aria, onMove }: { label: string; aria: string; onMove: (dx: number, dy: number) => void }) {
+  const arrows = [["←", "left", -1, 0], ["↑", "up", 0, -1], ["↓", "down", 0, 1], ["→", "right", 1, 0]] as const;
+  return (
+    <div className="flex items-center gap-1">
+      <span className="w-36 shrink-0 text-xs font-medium">{label}</span>
+      {arrows.map(([mark, word, dx, dy]) => (
+        <Button key={word} variant="secondary" className="min-h-7 px-2.5" aria-label={`Move ${aria} ${word}`} title={`${label}: ${word}`} onClick={(e) => { const step = e.shiftKey ? 0.1 : 0.5; onMove(dx * step, dy * step); }}>{mark}</Button>
+      ))}
+    </div>
+  );
+}
 
 /** Number of single-letter changes between two names (used to offer "Did you mean ...?" for a payee). */
 function editDistance(a: string, b: string): number {

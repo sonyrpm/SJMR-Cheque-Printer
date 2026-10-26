@@ -380,11 +380,22 @@ namespace SJMRChequeWriter
 
                 if (job.show_dialog)
                 {
+                    // The program has no window of its own here, so the dialog gets an invisible top-most owner:
+                    // it opens in front of every other window instead of behind them.
+                    using (Form owner = new Form())
                     using (PrintDialog dlg = new PrintDialog())
                     {
+                        owner.FormBorderStyle = FormBorderStyle.None;
+                        owner.ShowInTaskbar = false;
+                        owner.TopMost = true;
+                        owner.Opacity = 0;
+                        owner.Size = new Size(1, 1);
+                        owner.StartPosition = FormStartPosition.CenterScreen;
+                        owner.Show();
+                        owner.Activate();
                         dlg.Document = doc;
                         dlg.UseEXDialog = true;
-                        if (dlg.ShowDialog() != DialogResult.OK)
+                        if (dlg.ShowDialog(owner) != DialogResult.OK)
                         {
                             Console.WriteLine("CANCELLED");
                             return 0;

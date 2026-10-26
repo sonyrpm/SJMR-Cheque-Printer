@@ -303,19 +303,30 @@ const FIELD_LABELS: Record<string, string> = {
 };
 // What one drag moves. A date written in boxes has a day, a month and a year part; the crossing is
 // its two lines with the "A/C PAYEE ONLY" stamp. Hold Shift to move a single box.
+export const DATE_KEYS = ["mmDate", "mmD1", "mmD2", "mmM1", "mmM2", "mmY1", "mmY2", "mmY3", "mmY4", "mmS1", "mmS2"];
 const DRAG_GROUPS: Record<string, string[]> = {
-  mmD1: ["mmD1", "mmD2"], mmD2: ["mmD1", "mmD2"],
-  mmM1: ["mmM1", "mmM2"], mmM2: ["mmM1", "mmM2"],
-  mmY1: ["mmY1", "mmY2", "mmY3", "mmY4"], mmY2: ["mmY1", "mmY2", "mmY3", "mmY4"], mmY3: ["mmY1", "mmY2", "mmY3", "mmY4"], mmY4: ["mmY1", "mmY2", "mmY3", "mmY4"],
+  ...Object.fromEntries(DATE_KEYS.map((k) => [k, DATE_KEYS])),
   crossing: ["lnPayee1", "lnPayee2"],
 };
+/** The arrow buttons under the preview: one row for each part of the cheque that can be moved alone. */
+export const MOVE_PARTS: { id: string; label: string; keys: string[] }[] = [
+  { id: "payee", label: "Payee", keys: ["mmPayee", "mmPayee2"] },
+  { id: "words", label: "Amount in words", keys: ["mmAmountText1", "mmAmountText2"] },
+  { id: "date", label: "Date", keys: DATE_KEYS },
+  { id: "amount", label: "Amount in figures", keys: ["mmAmount"] },
+  { id: "crossing", label: "Crossing", keys: ["lnPayee1", "lnPayee2"] },
+  { id: "bearer", label: "Bearer mark (XXXXXX)", keys: ["mmNoBearer"] },
+];
+/** Only the fields this layout has (or that the engine can add) can be moved. */
+export function existingKeys(layout: NativeLayout | null, keys: string[]): string[] {
+  return keys.filter((k) => Object.hasOwn(layout?.fields ?? {}, k) || Object.hasOwn(DEFAULT_FIELDS, k));
+}
 export function dragKeys(region: string, single = false): string[] {
   return single ? (region === "crossing" ? ["lnPayee1", "lnPayee2"] : [region]) : Object.hasOwn(DRAG_GROUPS, region) ? DRAG_GROUPS[region] : [region];
 }
 export function dragLabel(region: string, single = false, boxDate = false): string {
   if (region === "crossing") return "Crossing lines and A/C Payee stamp";
-  if (!boxDate && (region === "mmD1" || region === "mmDate")) return "Date";
-  if (!single && /^mm[DMY]\d$/.test(region)) return { D: "Date: day", M: "Date: month", Y: "Date: year" }[region[2] as "D" | "M" | "Y"];
+  if (!single && DATE_KEYS.includes(region)) return "Date (all of it)";
   return chequeFieldLabel(region);
 }
 export function chequeFieldLabel(key: string): string {

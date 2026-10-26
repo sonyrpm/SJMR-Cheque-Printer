@@ -155,14 +155,24 @@ namespace SJMRChequeWriter
                 };
                 if (job.show_dialog)
                 {
+                    // No window of its own: an invisible top-most owner lets the dialog open in front.
+                    using (Form owner = new Form())
                     using (PrintDialog dialog = new PrintDialog())
                     {
+                        owner.FormBorderStyle = FormBorderStyle.None;
+                        owner.ShowInTaskbar = false;
+                        owner.TopMost = true;
+                        owner.Opacity = 0;
+                        owner.Size = new Size(1, 1);
+                        owner.StartPosition = FormStartPosition.CenterScreen;
+                        owner.Show();
+                        owner.Activate();
                         dialog.Document = doc;
                         dialog.UseEXDialog = true;
                         dialog.AllowSomePages = false;
                         dialog.AllowSelection = false;
                         dialog.AllowPrintToFile = false;
-                        if (dialog.ShowDialog() != DialogResult.OK)
+                        if (dialog.ShowDialog(owner) != DialogResult.OK)
                         {
                             Console.WriteLine("CANCELLED");
                             return 0;

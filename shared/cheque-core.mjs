@@ -636,7 +636,8 @@ export function renderChequeFields(canvas, template, data, ox = 0, oy = 0, shift
     const dx = x2e - x2s,
       dy = y2s - y2e;
     const angle = dx > 0 ? (Math.atan2(dy, dx) * 180) / Math.PI : 35;
-    canvas.draw_text(x1s + 6 * sf, (y1s + y2s) / 2 - 4.4 * sf, stamp, "F1", acPt, angle);
+    // Option 4, "cross only": the two lines without any text.
+    if (crossing !== 4) canvas.draw_text(x1s + 6 * sf, (y1s + y2s) / 2 - 4.4 * sf, stamp, "F1", acPt, angle);
     canvas.tag = "";
   }
 
@@ -915,7 +916,7 @@ export function prepare(request) {
     if (typeof data[key] !== "string" || Array.from(data[key]).length > 2000) throw new Error("Check cheque text length.");
   if (request.action !== "preview" && (!data.CCT_PAYEE.trim() || !data.CCT_CHEQUE_NO.trim()))
     throw new Error("Enter payee and cheque number.");
-  if (![1, 2, 3].includes(data.CCT_CROSSING_OPTION)) throw new Error("Choose a crossing option.");
+  if (![1, 2, 3, 4].includes(data.CCT_CROSSING_OPTION)) throw new Error("Choose a crossing option.");
   const options = accountOptions(account, template.id);
   const payee = template.fields.mmPayee;
   const width = (num(payee.width_mm ?? 133) * account.CCAC_SCALE_PCT) / 100;
