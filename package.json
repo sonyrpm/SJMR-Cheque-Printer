@@ -1,7 +1,7 @@
 {
   "name": "sjmr-cheque-writer",
   "productName": "SJMR Cheque Writer",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Cheque writer and printer with a simple cheque list for SJMR",
   "author": "SJMR Software <info@sjmrsoft.com>",
   "private": true,

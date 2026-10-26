@@ -15,6 +15,7 @@ import {
   existingKeys,
   MOVE_PARTS,
   moveFields,
+  resetCrossing,
   nextChequeNumber,
   type Calibration,
   type EnginePreview,
@@ -504,7 +505,7 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
               <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2" role="group" aria-label="Move with arrow buttons">
                 <MoveRow label="All writing" aria="all" onMove={(dx, dy) => setCal((old) => ({ ...old, x: old.x + dx, y: old.y + dy }))} />
                 {MOVE_PARTS.filter((p) => p.id !== "bearer" || values.noBearer).map((p) => (
-                  <MoveRow key={p.id} label={p.label} aria={p.id} onMove={(dx, dy) => setCal((old) => moveFields(old, existingKeys(layout, p.keys), dx, dy))} />
+                  <MoveRow key={p.id} label={p.label} aria={p.id} onMove={(dx, dy) => setCal((old) => moveFields(old, existingKeys(layout, p.keys), dx, dy))} onReset={p.id === "crossing" ? () => setCal((old) => resetCrossing(old)) : undefined} resetLabel="Reset crossing" />
                 ))}
               </div>
               <p className="text-xs text-muted">Each arrow moves 0.5 mm. Hold Shift to move 0.1 mm.</p>
@@ -576,6 +577,7 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
               <Button onClick={() => void saveCalibration()}>Save calibration</Button>
               <Button variant="secondary" onClick={() => setCal((old) => ({ ...defaultCalibration(layoutId), printer: old.printer, tray: old.tray, orientation: old.orientation, feed: old.feed, offsets: old.offsets, text: old.text }))}>Zero offsets / defaults</Button>
               <Tick label="Guides follow text offsets" value={followGuides} onChange={setFollowGuides} />
+              <Tick label="Lock the crossing lines together (the two lines and the A/C Payee text move as one piece)" value={cal.crossingLock !== false} onChange={(v) => setCalibration("crossingLock", v)} />
             </div>
             <div className="grid gap-3 md:grid-cols-3">
               <div className="space-y-2">
@@ -616,14 +618,15 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
 export type { EnginePrinter };
 
 /** One row of four arrow buttons: moves a part of the cheque left, up, down or right (Shift = a finer step). */
-function MoveRow({ label, aria, onMove }: { label: string; aria: string; onMove: (dx: number, dy: number) => void }) {
+function MoveRow({ label, aria, onMove, onReset, resetLabel }: { label: string; aria: string; onMove: (dx: number, dy: number) => void; onReset?: () => void; resetLabel?: string }) {
   const arrows = [["←", "left", -1, 0], ["↑", "up", 0, -1], ["↓", "down", 0, 1], ["→", "right", 1, 0]] as const;
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex min-w-0 flex-wrap items-center gap-1">
       <span className="w-36 shrink-0 text-xs font-medium">{label}</span>
       {arrows.map(([mark, word, dx, dy]) => (
         <Button key={word} variant="secondary" className="min-h-7 px-2.5" aria-label={`Move ${aria} ${word}`} title={`${label}: ${word}`} onClick={(e) => { const step = e.shiftKey ? 0.1 : 0.5; onMove(dx * step, dy * step); }}>{mark}</Button>
       ))}
+      {onReset && <Button variant="secondary" className="min-h-7 px-2.5" aria-label={resetLabel} title="Put it back where the layout has it" onClick={onReset}>Reset</Button>}
     </div>
   );
 }

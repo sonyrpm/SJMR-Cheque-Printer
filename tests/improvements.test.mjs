@@ -205,6 +205,12 @@ test("window: each field drags alone, Arabic cheque, test print, batch, undo, he
   for (let i = 0; i < 4; i++) await page.getByRole("button", { name: "Move crossing left", exact: true }).click();
   await page.waitForTimeout(700);
   assert.ok((await x("crossing")) < before2.cross - 1, "the crossing moved left with its arrow");
+  // Reset crossing: every move of the two lines is taken back, nothing else moves
+  const dateNow = await x("mmD1");
+  await page.getByRole("button", { name: "Reset crossing", exact: true }).click();
+  await page.waitForTimeout(700);
+  assert.equal(await x("crossing"), before.cross, "Reset crossing put the crossing back where the layout has it");
+  assert.equal(await x("mmD1"), dateNow, "the date did not move with the reset");
   const amountBefore = await x("mmAmount");
   for (let i = 0; i < 4; i++) await page.getByRole("button", { name: "Move amount left", exact: true }).click();
   await page.waitForTimeout(700);
@@ -224,6 +230,7 @@ test("window: each field drags alone, Arabic cheque, test print, batch, undo, he
   await page.waitForTimeout(900);
   await h.shot("11-arabic");
   await page.getByLabel(/Show advanced options/).check();
+  assert.equal(await page.getByLabel(/Lock the crossing lines together/).isChecked(), true, "the crossing is locked by default");
   await page.getByRole("button", { name: "Cheque PDF" }).click();
   await page.getByText(/Cheque PDF saved/).waitFor();
   // the form clears itself after the saved cheque: wait for that before typing the next one

@@ -45,6 +45,8 @@ export type Calibration = {
   y: number;
   spacing: number;
   crossingShift: number;
+  /** The two crossing lines and the A/C Payee stamp move as one piece (default). Off = each line follows its own layout numbers. */
+  crossingLock?: boolean;
   printer: string;
   tray: string;
   orientation: "Landscape" | "Portrait";
@@ -129,6 +131,7 @@ export function defaultCalibration(id = "ADCB"): Calibration {
     y: id === "ADCB" ? 2 : 0,
     spacing: 0,
     crossingShift: 0,
+    crossingLock: true,
     printer: "",
     tray: "Multi-purpose Tray",
     orientation: "Landscape",
@@ -159,12 +162,28 @@ const DEFAULT_FIELDS: Record<string, (fields: Record<string, { left_mm: number; 
   lnPayee2: () => ({ left_mm: -0.3, top_mm: 26.1, width_mm: 39, height_mm: -28 }),
   mmNoBearer: (f) => ({ left_mm: 8, top_mm: Number(f.mmPayee?.top_mm ?? 26.5) + 1.2 }),
 };
+export const CROSSING_KEYS = ["lnPayee1", "lnPayee2"];
+export function crossingLocked(cal: Calibration): boolean {
+  return cal.crossingLock !== false;
+}
+/** How far the crossing (both lines and the stamp) has been moved, in mm. Only used while it is locked. */
+export function crossingMove(cal: Calibration): { dx: number; dy: number } {
+  const moved = cal.offsets.lnPayee1 ?? cal.offsets.lnPayee2;
+  return crossingLocked(cal) && moved ? { dx: moved.left_mm, dy: moved.top_mm } : { dx: 0, dy: 0 };
+}
+/** Puts the crossing back where the layout has it (the moves made with the mouse or the arrows are removed). */
+export function resetCrossing(cal: Calibration): Calibration {
+  const offsets = { ...cal.offsets };
+  for (const key of CROSSING_KEYS) delete offsets[key];
+  return { ...cal, offsets };
+}
 export function effectiveLayout(layout: NativeLayout, cal: Calibration) {
   const result = structuredClone(layout);
+  const apart = (key: string) => crossingLocked(cal) && CROSSING_KEYS.includes(key); // moved as one piece, see engineRequest
   for (const key of Object.keys(cal.offsets))
-    if (!Object.hasOwn(result.fields, key) && Object.hasOwn(DEFAULT_FIELDS, key)) (result.fields as Record<string, unknown>)[key] = DEFAULT_FIELDS[key](result.fields as never);
+    if (!apart(key) && !Object.hasOwn(result.fields, key) && Object.hasOwn(DEFAULT_FIELDS, key)) (result.fields as Record<string, unknown>)[key] = DEFAULT_FIELDS[key](result.fields as never);
   for (const [key, delta] of Object.entries(cal.offsets)) {
-    if (Object.hasOwn(result.fields, key)) {
+    if (!apart(key) && Object.hasOwn(result.fields, key)) {
       result.fields[key].left_mm += delta.left_mm;
       result.fields[key].top_mm += delta.top_mm;
     }
@@ -197,6 +216,8 @@ export function engineRequest(
       CCAC_PRINTER_OFFSET_Y: cal.y,
       CCAC_LINE_SPACING: cal.spacing,
       CCAC_SHIFT_AC_PAYEE: cal.crossingShift,
+      CCAC_CROSS_DX: crossingMove(cal).dx,
+      CCAC_CROSS_DY: crossingMove(cal).dy,
       CCAC_PRINTER_NAME: cal.printer,
       CCAC_PRINTER_TRAY: cal.tray,
       CCAC_ORIENTATION: cal.orientation,
@@ -250,6 +271,7 @@ export function validateCalibration(input: Calibration): Calibration {
   for (const key of ["printer", "tray"] as const)
     if (typeof result[key] !== "string" || result[key].length > 300)
       throw new Error("Choose a valid printer and tray.");
+  if (result.crossingLock !== undefined && typeof result.crossingLock !== "boolean") throw new Error("Choose a valid crossing setting.");
   if (Object.keys(result.offsets).length > 200) throw new Error("Too many field offsets.");
   for (const delta of Object.values(result.offsets))
     for (const value of [delta.left_mm, delta.top_mm])

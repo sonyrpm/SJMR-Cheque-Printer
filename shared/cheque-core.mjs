@@ -602,7 +602,7 @@ export function resolveChequeDimensions(template, account) {
   return [w > 40 ? w : rawW, h > 25 ? h : rawH];
 }
 
-export function renderChequeFields(canvas, template, data, ox = 0, oy = 0, shiftAc = 0, fontSizePt = 12.5, scalePct = 100, wrapChars = 40, lineSpacing = 0, textOptions = null) {
+export function renderChequeFields(canvas, template, data, ox = 0, oy = 0, shiftAc = 0, fontSizePt = 12.5, scalePct = 100, wrapChars = 40, lineSpacing = 0, textOptions = null, crossMove = null) {
   const options = validateOptions(textOptions);
   const fields = template.fields || {};
   const ls = num(lineSpacing || 0);
@@ -622,14 +622,19 @@ export function renderChequeFields(canvas, template, data, ox = 0, oy = 0, shift
     const stamp = { 1: "A/C PAYEE ONLY", 2: "NOT NEGOTIABLE", 3: "A/C PAYEE ONLY" }[crossing] || "A/C PAYEE ONLY";
     const ln1 = fields.lnPayee1 || { left_mm: -0.5, top_mm: 18.9, width_mm: 28, height_mm: -20 };
     const ln2 = fields.lnPayee2 || { left_mm: -0.3, top_mm: 26.1, width_mm: 39, height_mm: -28 };
-    const x1s = Math.max(0, num(ln1.left_mm) * sf) + ox + shiftAc;
-    const y1s = num(ln1.top_mm) * sf + oy;
-    const x1e = (num(ln1.left_mm) + num(ln1.width_mm)) * sf + ox + shiftAc;
-    const y1e = Math.max(0, (num(ln1.top_mm) + num(ln1.height_mm)) * sf) + oy;
-    const x2s = Math.max(0, num(ln2.left_mm) * sf) + ox + shiftAc;
-    const y2s = num(ln2.top_mm) * sf + oy;
-    const x2e = (num(ln2.left_mm) + num(ln2.width_mm)) * sf + ox + shiftAc;
-    const y2e = Math.max(0, (num(ln2.top_mm) + num(ln2.height_mm)) * sf) + oy;
+    // Locked crossing: the lines and the stamp keep the shape the layout gives them and move as ONE piece by (mx, my).
+    // The page-edge limit (a line cannot start left of, or end above, the cheque) is applied to the layout's own numbers
+    // first, so moving never bends the lines or turns the text away from them.
+    const mx = num(crossMove?.dx ?? 0) * sf;
+    const my = num(crossMove?.dy ?? 0) * sf;
+    const x1s = Math.max(0, num(ln1.left_mm) * sf) + ox + shiftAc + mx;
+    const y1s = num(ln1.top_mm) * sf + oy + my;
+    const x1e = (num(ln1.left_mm) + num(ln1.width_mm)) * sf + ox + shiftAc + mx;
+    const y1e = Math.max(0, (num(ln1.top_mm) + num(ln1.height_mm)) * sf) + oy + my;
+    const x2s = Math.max(0, num(ln2.left_mm) * sf) + ox + shiftAc + mx;
+    const y2s = num(ln2.top_mm) * sf + oy + my;
+    const x2e = (num(ln2.left_mm) + num(ln2.width_mm)) * sf + ox + shiftAc + mx;
+    const y2e = Math.max(0, (num(ln2.top_mm) + num(ln2.height_mm)) * sf) + oy + my;
     canvas.tag = "crossing";
     canvas.draw_line(x1s, y1s, x1e, y1e);
     canvas.draw_line(x2s, y2s, x2e, y2e);
@@ -732,6 +737,8 @@ function accountNumbers(account) {
     ox: num(account.CCAC_PRINTER_OFFSET_X || 0),
     oy: num(account.CCAC_PRINTER_OFFSET_Y || 0),
     shift: num(account.CCAC_SHIFT_AC_PAYEE || 0),
+    crossDx: num(account.CCAC_CROSS_DX || 0),
+    crossDy: num(account.CCAC_CROSS_DY || 0),
     font: num(account.CCAC_FONT_SIZE || 12.5),
     scale: num(account.CCAC_SCALE_PCT || 100),
     wrap: Math.trunc(num(account.CCAC_WRAP_CHARS || 40)),
@@ -753,7 +760,7 @@ function drawLeaf(canvas, template, data, account, baseX = 0, baseY = 0) {
     for (const [x1, y1, x2, y2] of [[0, 0, w, 0], [w, 0, w, h], [w, h, 0, h], [0, h, 0, 0]])
       canvas.draw_line(baseX + x1, baseY + y1, baseX + x2, baseY + y2);
   }
-  renderChequeFields(canvas, template, data, baseX + a.ox, baseY + a.oy, a.shift, a.font, a.scale, a.wrap, a.spacing, accountOptions(account, template.id));
+  renderChequeFields(canvas, template, data, baseX + a.ox, baseY + a.oy, a.shift, a.font, a.scale, a.wrap, a.spacing, accountOptions(account, template.id), { dx: a.crossDx, dy: a.crossDy });
 }
 export function chequePdf(template, data, account) {
   const [w, h] = leafSize(template, account);
@@ -897,6 +904,12 @@ export function prepare(request) {
     const value = Number(account[key]);
     if (account[key] === null || account[key] === undefined || account[key] === "" || !Number.isFinite(value) || value < low || value > high)
       throw new Error("Invalid calibration: " + key);
+    account[key] = value;
+  }
+  for (const key of ["CCAC_CROSS_DX", "CCAC_CROSS_DY"]) {
+    if (account[key] === undefined || account[key] === null || account[key] === "") continue;
+    const value = Number(account[key]);
+    if (!Number.isFinite(value) || value < -200 || value > 200) throw new Error("Invalid calibration: " + key);
     account[key] = value;
   }
   if (outline) account.CCAC_OUTLINE = true;
