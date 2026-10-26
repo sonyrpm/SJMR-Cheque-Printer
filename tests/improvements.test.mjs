@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createCore } from "../core/index.mjs";
@@ -9,6 +10,7 @@ import { startHarness } from "./helpers/ui-harness.mjs";
 import { memoryStore, nodeDb } from "./helpers/node-host.mjs";
 import { suggestArabic } from "../src/lib/arabic-names.ts";
 import { parseBatch } from "../src/lib/batch-rows.ts";
+import { defaultCalibration, dragKeys, effectiveLayout } from "../src/lib/cheque-writer-model.ts";
 
 const root = path.resolve(import.meta.dirname, "..");
 const layouts = JSON.parse(fs.readFileSync(path.join(root, "shared/bank-layouts.json"), "utf8"));
@@ -62,6 +64,14 @@ test("every piece of writing can be grabbed on its own in the preview", () => {
   assert.ok(v2.hitRegions.mmPayee[2] > field.left_mm + 100, "Arabic payee is written at the right end of its field");
 });
 
+test("a field key like 'constructor' cannot change the layout; the no-bearer mark can be moved even when the layout does not list it", () => {
+  const moved = effectiveLayout(layouts.ADCB, { ...defaultCalibration(), offsets: { mmNoBearer: { left_mm: 1, top_mm: 1 }, constructor: { left_mm: 1, top_mm: 1 } } });
+  assert.ok(moved.fields.mmNoBearer);
+  assert.ok(!Object.hasOwn(moved.fields, "constructor"));
+  assert.deepEqual(dragKeys("constructor"), ["constructor"]);
+  assert.deepEqual(dragKeys("crossing"), ["lnPayee1", "lnPayee2"]);
+});
+
 test("Arabic name suggestions, batch rows, payee Arabic names and undo of a removed cheque", async () => {
   assert.equal(suggestArabic("Mohammed Ali Trading LLC"), "محمد علي للتجارة ذ.م.م");
   assert.equal(suggestArabic("Al Noor General Trading Co"), "شركة النور العامة للتجارة");
@@ -87,7 +97,7 @@ test("Arabic name suggestions, batch rows, payee Arabic names and undo of a remo
 });
 
 test("a copy of the data is saved once a day, one file for each weekday", async () => {
-  const dir = fs.mkdtempSync(path.join(import.meta.dirname, "..", "tmp-backup-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cw-backup-"));
   try {
     const file = path.join(dir, "cheque_writer.db");
     let clock = new Date(2026, 10, 2, 9, 0); // a Monday
@@ -110,7 +120,12 @@ test("a copy of the data is saved once a day, one file for each weekday", async 
     assert.equal(fs.statSync(path.join(dir, "auto-backup-tue.db")).mtimeMs, before);
     app.stop();
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    // Windows keeps the data file locked until the program ends; the folder is in the temp area, so a failed clean-up is harmless.
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // ignored
+    }
   }
 });
 
@@ -176,6 +191,8 @@ test("window: each field drags alone, Arabic cheque, test print, batch, undo, he
   await page.getByLabel(/Show advanced options/).check();
   await page.getByRole("button", { name: "Cheque PDF" }).click();
   await page.getByText(/Cheque PDF saved/).waitFor();
+  // the form clears itself after the saved cheque: wait for that before typing the next one
+  await page.waitForFunction(() => document.querySelector('input[aria-label="Payee name in Arabic"]').value === "" && document.querySelector('input[aria-label="Cheque amount"]').value === "");
   const pdf = Buffer.from(h.savedData.at(-1), "base64");
   assert.ok(pdf.includes("FontFile2"), "the PDF carries the Arabic font");
   assert.equal((await h.store.cheques()).length, 1, "a saved PDF is listed like a printed cheque when 'Add cheque to list' is ticked");

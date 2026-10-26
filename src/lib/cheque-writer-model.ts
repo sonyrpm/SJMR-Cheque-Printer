@@ -162,7 +162,7 @@ const DEFAULT_FIELDS: Record<string, (fields: Record<string, { left_mm: number; 
 export function effectiveLayout(layout: NativeLayout, cal: Calibration) {
   const result = structuredClone(layout);
   for (const key of Object.keys(cal.offsets))
-    if (!Object.hasOwn(result.fields, key) && DEFAULT_FIELDS[key]) (result.fields as Record<string, unknown>)[key] = DEFAULT_FIELDS[key](result.fields as never);
+    if (!Object.hasOwn(result.fields, key) && Object.hasOwn(DEFAULT_FIELDS, key)) (result.fields as Record<string, unknown>)[key] = DEFAULT_FIELDS[key](result.fields as never);
   for (const [key, delta] of Object.entries(cal.offsets)) {
     if (Object.hasOwn(result.fields, key)) {
       result.fields[key].left_mm += delta.left_mm;
@@ -310,7 +310,7 @@ const DRAG_GROUPS: Record<string, string[]> = {
   crossing: ["lnPayee1", "lnPayee2"],
 };
 export function dragKeys(region: string, single = false): string[] {
-  return single ? (region === "crossing" ? ["lnPayee1", "lnPayee2"] : [region]) : DRAG_GROUPS[region] || [region];
+  return single ? (region === "crossing" ? ["lnPayee1", "lnPayee2"] : [region]) : Object.hasOwn(DRAG_GROUPS, region) ? DRAG_GROUPS[region] : [region];
 }
 export function dragLabel(region: string, single = false, boxDate = false): string {
   if (region === "crossing") return "Crossing lines and A/C Payee stamp";

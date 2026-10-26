@@ -94,11 +94,11 @@ export const LAM_ALEF = {
   0x64A: [0xFC44,0xFC87],
 };
 
-const ARABIC = /[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/;
+const ARABIC = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
 export const isArabic = (text) => ARABIC.test(String(text ?? ""));
 const isArabicChar = (ch) => ARABIC.test(ch);
-const DIACRITIC = /[ً-ٰٟۖ-ۭ]/g;
-const ARABIC_DIGIT = /[٠-٩۰-۹]/;
+const DIACRITIC = /[\u064B-\u065F\u0670\u06D6-\u06ED]/g;
+const ARABIC_DIGIT = /[\u0660-\u0669\u06F0-\u06F9]/;
 
 // ---- joining -------------------------------------------------------------------------------------
 const joinsNext = (cp) => !!FORMS[cp]?.[2] || cp === 0x640; // can join to the letter after it (dual joining)
