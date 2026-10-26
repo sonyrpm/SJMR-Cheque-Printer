@@ -18,11 +18,15 @@ export function createApi({ store, engine, templatePrinter, savePdf, chooseFile,
     config: await store.config(),
     accounts: await store.accounts(),
     payees: await store.payees(),
+    payeeAr: await store.payeeArabic(),
+    lastBackup: await store.setting("last_backup", null),
     alerts: await store.alerts(),
     summary: await store.summary(),
     today: today(),
   });
   return {
+    /** The one-at-a-time door, for the few callers outside this file (the data copy). */
+    locked,
     state: () => locked(state),
 
     // ---- cheque writing --------------------------------------------------------------------------
@@ -51,7 +55,10 @@ export function createApi({ store, engine, templatePrinter, savePdf, chooseFile,
         const saved = await locked(async () => {
           const added = await store.addCheque(chequeFromData({ accountId: list.accountId, data: prepared.data, layoutId: list.layoutId, today: today() }));
           try {
-            await store.addPayee(added.cheque.payee);
+            // An Arabic cheque keeps its English name in the payee list, with the Arabic spelling beside it.
+            const key = String(list.payee ?? "").trim();
+            if (key && String(list.arabic ?? "").trim()) await store.setPayeeArabic(key, list.arabic);
+            else await store.addPayee(key || added.cheque.payee);
           } catch {
             // The payee list is a convenience; the cheque is already listed.
           }
@@ -84,6 +91,9 @@ export function createApi({ store, engine, templatePrinter, savePdf, chooseFile,
     deleteAccount: (id) => locked(async () => (await store.deleteAccount(id), null)),
 
     // ---- payees ----------------------------------------------------------------------------------
+    setPayeeArabic: ({ name, arabic }) => locked(() => store.setPayeeArabic(name, arabic)),
+    restoreCheque: (cheque) => locked(() => store.restoreCheque(cheque)),
+    markBackup: (when) => locked(() => store.putSetting("last_backup", when)),
     addPayee: (name) => locked(async () => (await store.addPayee(name), store.payees())),
     removePayee: (name) => locked(async () => (await store.removePayee(name), store.payees())),
     importPayees: (list) => locked(async () => ({ added: await store.importPayees(list), payees: await store.payees() })),

@@ -40,6 +40,7 @@ create table if not exists cheque_log(
   action text not null, from_status text, to_status text, detail text not null default '');
 create index if not exists cheque_log_cheque on cheque_log(cheque_id);
 create table if not exists payees(name text primary key collate nocase);
+create table if not exists payee_ar(name text primary key collate nocase, name_ar text not null);
 create table if not exists alerts_seen(cheque_id text not null, day text not null, kind text not null, primary key(cheque_id, day, kind));
 `;
 
@@ -219,6 +220,25 @@ export class ChequeStore {
   }
   async removePayee(name) {
     await this.run("delete from payees where name=?", String(name));
+    await this.run("delete from payee_ar where name=?", String(name));
+  }
+  /** Arabic spelling kept next to a payee name: { "AL NOOR TRADING": "النور للتجارة" }. */
+  async payeeArabic() {
+    const out = {};
+    for (const r of await this.all("select name, name_ar from payee_ar")) out[r.name] = r.name_ar;
+    return out;
+  }
+  async setPayeeArabic(name, arabic) {
+    const text = String(name ?? "").trim();
+    const ar = String(arabic ?? "").trim();
+    if (!text) throw new Error("Enter a payee name.");
+    if (ar.length > 500 || [...ar].some((c) => c.charCodeAt(0) < 32)) throw new Error("Arabic names have at most 500 characters and no control characters.");
+    await this.tx(async () => {
+      await this.addPayee(text);
+      if (ar) await this.run("insert into payee_ar(name,name_ar) values(?,?) on conflict(name) do update set name_ar=excluded.name_ar", text, ar);
+      else await this.run("delete from payee_ar where name=?", text);
+    });
+    return await this.payeeArabic();
   }
   async replacePayees(list) {
     if (!Array.isArray(list) || list.length > 50000) throw new Error("Choose a list of up to 50,000 payee names.");
@@ -322,6 +342,20 @@ export class ChequeStore {
     await this.run("update cheques set cheque_date=?, updated_at=? where id=?", date, now(), id);
     await this.log(id, "date changed", null, null, `${old.chequeDate ?? "blank"} → ${date ?? "blank"}`);
     return await this.cheque(id);
+  }
+  /** Puts a removed cheque back exactly as it was (the Undo of "Remove from list"). */
+  async restoreCheque(c) {
+    if (!c || typeof c !== "object" || !c.id || !c.accountId || !c.chequeNo) throw new Error("Nothing to restore.");
+    if (!await this.get("select 1 x from accounts where id=?", c.accountId)) throw new Error("The bank account of this cheque is no longer here.");
+    if (await this.get("select 1 x from cheques where id=? or (account_id=? and cheque_no=?)", c.id, c.accountId, c.chequeNo)) throw new Error("This cheque number is already in the list.");
+    await this.tx(async () => {
+      await this.run(
+        "insert into cheques(id,account_id,cheque_no,payee,amount,currency,cheque_date,issued_on,status,status_date,reason,note,layout_id,wording,crossing,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        c.id, c.accountId, c.chequeNo, c.payee, c.amount, c.currency, c.chequeDate ?? null, c.issuedOn, c.status, c.statusDate ?? null, c.reason ?? "", c.note ?? "", c.layoutId ?? "", c.wording ?? "", c.crossing ?? 1, c.createdAt ?? now(), now(),
+      );
+      await this.log(c.id, "restored", null, c.status, "Undo of remove from list");
+    });
+    return await this.cheque(c.id);
   }
   async deleteCheque(id) {
     await this.tx(async () => {

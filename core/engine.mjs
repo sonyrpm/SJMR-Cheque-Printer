@@ -7,6 +7,7 @@ import {
   prepare,
   validateLayouts,
 } from "../shared/cheque-core.mjs";
+import { arabicFontLoaded, isArabic, setArabicFont } from "../shared/cheque-arabic.mjs";
 
 const actions = new Set(["printers", "preview", "pdf", "direct", "dialog", "image", "validate-layouts"]);
 const withoutBom = (text) => (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
@@ -23,7 +24,7 @@ const b64 = (bytes) => {
 // ChequeDirectPrinter.cs inside PowerShell. `runHelper` is the host's door to it:
 // ({ args, job, visible, timeoutMs }) -> { code, out, err }. The host writes the job to a private
 // temporary file, removes it afterwards and stops the helper when the time is up.
-export function createChequeEngine({ runHelper, platform = "win32" } = {}) {
+export function createChequeEngine({ runHelper, platform = "win32", loadFont } = {}) {
   let printQueue = Promise.resolve();
 
   function helper(args, timeoutMs, { visible = false, job } = {}) {
@@ -81,6 +82,8 @@ export function createChequeEngine({ runHelper, platform = "win32" } = {}) {
     if (action === "dialog" && caller.mainWindow !== true)
       throw new Error("Open the print dialog from the main Windows program.");
     if (JSON.stringify(input).length > 24 * 1024 * 1024) throw new Error("Cheque request is too large.");
+    // The Arabic font is loaded the first time Arabic text is drawn.
+    if (!arabicFontLoaded() && loadFont && isArabic(JSON.stringify(input.cheque ?? {}))) setArabicFont(await loadFont());
     if (action === "printers") return printers();
     if (action === "validate-layouts") return { layouts: validateLayouts(input.layouts) };
     if (action === "image") return loadBackground(input.data);

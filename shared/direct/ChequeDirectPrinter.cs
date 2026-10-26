@@ -29,6 +29,8 @@ namespace SJMRChequeWriter
         public float font_pt { get; set; }
         public float rotation_deg { get; set; }
         public bool bold { get; set; }
+        public bool rtl { get; set; }
+        public bool anchored { get; set; }
     }
 
     public class PrintJobSpec
@@ -344,7 +346,19 @@ namespace SJMRChequeWriter
                             {
                                 float x = t.x_mm - hardMarginX_mm;
                                 float y = t.y_mm - hardMarginY_mm;
-                                if (Math.Abs(t.rotation_deg) < 0.05f)
+                                if (t.rtl)
+                                {
+                                    // Arabic: laid out right to left; x is the right edge of the field (or the start when no field width is known).
+                                    using (StringFormat rf = new StringFormat(sf))
+                                    {
+                                        rf.FormatFlags |= StringFormatFlags.DirectionRightToLeft;
+                                        rf.Alignment = StringAlignment.Near;
+                                        SizeF size = g.MeasureString(t.text, font, new PointF(0f, 0f), rf);
+                                        float right = t.anchored ? x : x + size.Width;
+                                        g.DrawString(t.text, font, Brushes.Black, new RectangleF(right - size.Width - 2f, y, size.Width + 2f, size.Height + 2f), rf);
+                                    }
+                                }
+                                else if (Math.Abs(t.rotation_deg) < 0.05f)
                                 {
                                     g.DrawString(t.text, font, Brushes.Black, x, y, sf);
                                 }

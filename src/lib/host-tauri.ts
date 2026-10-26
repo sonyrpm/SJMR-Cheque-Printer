@@ -26,6 +26,11 @@ export async function tauriHost(): Promise<Host> {
     async openDb(path, { readOnly }) {
       return database(await invoke<number>("db_open", { path, readOnly }));
     },
+    async loadFont() {
+      const reply = await fetch("fonts/NotoNaskhArabic-Regular.ttf");
+      if (!reply.ok) throw new Error("The Arabic font file is missing from the program.");
+      return new Uint8Array(await reply.arrayBuffer());
+    },
     runHelper: ({ args, job, visible, timeoutMs, script }) => invoke("run_helper", { args, job: job ?? null, visible, timeoutMs, script: script ?? null }),
     async savePdf(base64, name) {
       const file = await save({ title: "Save cheque PDF", defaultPath: name, filters: [{ name: "PDF", extensions: ["pdf"] }] });

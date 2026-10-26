@@ -3,6 +3,8 @@
 // pdf_printer.py / cheque_text.py / amount_words.py / data_validation.py.
 // Pure functions only: no files, no printer, no books. Printing to Windows is in cheque-engine.mjs.
 
+import { arabicFontInfo, arabicFontBytes, arabicRunUnits, glyphsOf, isArabic, visualRuns } from "./cheque-arabic.mjs";
+
 export const MM_TO_PT = 72.0 / 25.4;
 export const SOURCE = "sjmr-cheque-core-1";
 
@@ -52,10 +54,17 @@ const HELVETICA = [
   556, 556, 556, 556, 556, 556, 556, 584, 611, 556, 556, 556, 556, 500, 556, 500,
 ];
 const latin1 = (text) => Array.from(String(text), (c) => (c.codePointAt(0) < 256 ? c : "?")).join("");
-export function textWidthMm(value, size) {
+function latinUnits(value) {
   let sum = 0;
   for (const ch of latin1(value)) sum += HELVETICA[ch.charCodeAt(0)];
-  return ((sum * 0.001 * size) * 25.4) / 72;
+  return sum;
+}
+export function textWidthMm(value, size) {
+  if (isArabic(value)) {
+    const units = visualRuns(value).reduce((sum, r) => sum + (r.arabic ? arabicRunUnits(r.text) : latinUnits(r.text)), 0);
+    return ((units * 0.001 * size) * 25.4) / 72;
+  }
+  return ((latinUnits(value) * 0.001 * size) * 25.4) / 72;
 }
 
 // ---- Amount in words ----------------------------------------------------------------------------
@@ -427,6 +436,7 @@ export class PdfCanvas {
   }
   draw_text(left, top, text, font = "F1", size = 10, rotation = 0) {
     if (!text) return;
+    if (isArabic(text) && arabicFontInfo()) return this.draw_arabic(left, top, text, size, rotation);
     const escaped = pdfEscape(text);
     const x = this.x(left),
       y = this.y(top + size * 0.31);
@@ -439,13 +449,41 @@ export class PdfCanvas {
       this.ops.push(`BT /${font} ${fixed(size, 1)} Tf ${fixed(c, 4)} ${fixed(s, 4)} ${fixed(-s, 4)} ${fixed(c, 4)} ${fixed(x, 2)} ${fixed(y, 2)} Tm (${escaped}) Tj ET`);
     }
   }
+  // Arabic stretches are drawn with the embedded font (glyph numbers as hex), Latin stretches with Helvetica.
+  draw_arabic(left, top, text, size, rotation) {
+    const info = arabicFontInfo();
+    this.arabic = this.arabic || new Map();
+    const runs = visualRuns(text).map((r) => {
+      if (!r.arabic) return { ...r, units: latinUnits(r.text) };
+      const glyphs = glyphsOf(r.text);
+      for (const g of glyphs) this.arabic.set(g.gid, g.width);
+      return { ...r, glyphs, units: glyphs.reduce((a, g) => a + (g.width * 1000) / info.unitsPerEm, 0) };
+    });
+    const mm = (units) => ((units * 0.001 * size) * 25.4) / 72;
+    const total = mm(runs.reduce((a, r) => a + r.units, 0));
+    const box = this.boxW || 0;
+    let pen = box > 0 ? left + Math.max(0, box - total) : left;
+    const rad = (rotation * Math.PI) / 180;
+    const c = Math.cos(rad),
+      sn = Math.sin(rad);
+    for (const r of runs) {
+      const x = this.x(pen),
+        y = this.y(top + size * 0.31);
+      const body = r.arabic ? `/F4 ${fixed(size, 1)} Tf` : `/F1 ${fixed(size, 1)} Tf`;
+      const show = r.arabic ? `<${r.glyphs.map((g) => g.gid.toString(16).padStart(4, "0")).join("")}>` : `(${pdfEscape(r.text)})`;
+      if (Math.abs(rotation) < 0.01) this.ops.push(`BT ${body} ${fixed(x, 2)} ${fixed(y, 2)} Td ${show} Tj ET`);
+      else this.ops.push(`BT ${body} ${fixed(c, 4)} ${fixed(sn, 4)} ${fixed(-sn, 4)} ${fixed(c, 4)} ${fixed(x, 2)} ${fixed(y, 2)} Tm ${show} Tj ET`);
+      pen += mm(r.units);
+    }
+  }
   toBuffer() {
     const stream = Buffer.from(this.ops.join("\n"), "latin1");
+    const arabic = this.arabic?.size ? this.arabic : null;
     const objects = [
       Buffer.from("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n", "latin1"),
       Buffer.from("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n", "latin1"),
       Buffer.from(
-        `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${fixed(this.widthPt, 2)} ${fixed(this.heightPt, 2)}] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R >> >> /Contents 7 0 R >>\nendobj\n`,
+        `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${fixed(this.widthPt, 2)} ${fixed(this.heightPt, 2)}] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R${arabic ? " /F4 8 0 R" : ""} >> >> /Contents 7 0 R >>\nendobj\n`,
         "latin1",
       ),
       Buffer.from("4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n", "latin1"),
@@ -453,6 +491,18 @@ export class PdfCanvas {
       Buffer.from("6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold /Encoding /WinAnsiEncoding >>\nendobj\n", "latin1"),
       Buffer.concat([Buffer.from(`7 0 obj\n<< /Length ${stream.length} >>\nstream\n`, "latin1"), stream, Buffer.from("\nendstream\nendobj\n", "latin1")]),
     ];
+    if (arabic) {
+      const info = arabicFontInfo();
+      const file = arabicFontBytes();
+      const scale = (v) => Math.round((v * 1000) / info.unitsPerEm);
+      const widths = [...arabic.entries()].sort((a, b) => a[0] - b[0]).map(([gid, w]) => `${gid} [${scale(w)}]`).join(" ");
+      objects.push(
+        Buffer.from("8 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /NotoNaskhArabic /Encoding /Identity-H /DescendantFonts [9 0 R] >>\nendobj\n", "latin1"),
+        Buffer.from(`9 0 obj\n<< /Type /Font /Subtype /CIDFontType2 /BaseFont /NotoNaskhArabic /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 10 0 R /DW 1000 /W [${widths}] /CIDToGIDMap /Identity >>\nendobj\n`, "latin1"),
+        Buffer.from(`10 0 obj\n<< /Type /FontDescriptor /FontName /NotoNaskhArabic /Flags 4 /FontBBox [${info.bbox.map(scale).join(" ")}] /ItalicAngle 0 /Ascent ${scale(info.ascent)} /Descent ${scale(info.descent)} /CapHeight 700 /StemV 80 /FontFile2 11 0 R >>\nendobj\n`, "latin1"),
+        Buffer.concat([Buffer.from(`11 0 obj\n<< /Length ${file.length} /Length1 ${file.length} >>\nstream\n`, "latin1"), Buffer.from(file), Buffer.from("\nendstream\nendobj\n", "latin1")]),
+      );
+    }
     const parts = [Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a])];
     let size = parts[0].length;
     const offsets = [];
@@ -478,17 +528,19 @@ export class SceneCanvas {
     this.fill = [0, 0, 0];
     this.stroke = [0, 0, 0];
     this.lineWidth = 1;
+    this.tag = "";
+    this.boxW = 0;
   }
   set_stroke_color(r, g, b) { this.stroke = [r, g, b]; }
   set_fill_color(r, g, b) { this.fill = [r, g, b]; }
   set_line_width(w) { this.lineWidth = w; }
-  draw_line(x1, y1, x2, y2) { this.items.push({ k: "line", x1, y1, x2, y2, w: this.lineWidth, c: [...this.stroke] }); }
+  draw_line(x1, y1, x2, y2) { this.items.push({ k: "line", x1, y1, x2, y2, w: this.lineWidth, c: [...this.stroke], tag: this.tag }); }
   draw_rect(left, top, width, height, fill = false, stroke = true) {
     this.items.push({ k: "rect", x: left, y: top, w: width, h: height, fill: fill ? [...this.fill] : null, stroke: stroke ? [...this.stroke] : null, lw: this.lineWidth });
   }
   draw_text(left, top, text, font = "F1", size = 10, rotation = 0) {
     if (!text) return;
-    this.items.push({ k: "text", x: left, y: top, text: String(text), font, size, rot: rotation, c: [...this.fill] });
+    this.items.push({ k: "text", x: left, y: top, text: String(text), font, size, rot: rotation, c: [...this.fill], tag: this.tag, ...(isArabic(text) ? { rtl: true, bw: this.boxW || 0 } : {}) });
   }
 }
 
@@ -498,6 +550,7 @@ export class DirectCollector {
     this.lines = [];
     this.texts = [];
     this.lineWidthPt = 0.95;
+    this.boxW = 0;
   }
   set_fill_color() {}
   set_stroke_color() {}
@@ -507,7 +560,9 @@ export class DirectCollector {
   }
   draw_text(left, top, text, font = "F1", size = 12.5, rotation = 0) {
     if (!text) return;
-    this.texts.push({ x_mm: pyRound(left, 2), y_mm: pyRound(top, 2), text: String(text), font_pt: pyRound(size, 2), rotation_deg: pyRound(rotation, 2), bold: font === "F2" });
+    const rtl = isArabic(text);
+    const right = rtl && this.boxW > 0 ? left + this.boxW : left;
+    this.texts.push({ x_mm: pyRound(right, 2), y_mm: pyRound(top, 2), text: String(text), font_pt: pyRound(size, 2), rotation_deg: pyRound(rotation, 2), bold: font === "F2", ...(rtl ? { rtl: true, anchored: this.boxW > 0 } : {}) });
   }
 }
 
@@ -575,20 +630,26 @@ export function renderChequeFields(canvas, template, data, ox = 0, oy = 0, shift
     const y2s = num(ln2.top_mm) * sf + oy;
     const x2e = (num(ln2.left_mm) + num(ln2.width_mm)) * sf + ox + shiftAc;
     const y2e = Math.max(0, (num(ln2.top_mm) + num(ln2.height_mm)) * sf) + oy;
+    canvas.tag = "crossing";
     canvas.draw_line(x1s, y1s, x1e, y1e);
     canvas.draw_line(x2s, y2s, x2e, y2e);
     const dx = x2e - x2s,
       dy = y2s - y2e;
     const angle = dx > 0 ? (Math.atan2(dy, dx) * 180) / Math.PI : 35;
     canvas.draw_text(x1s + 6 * sf, (y1s + y2s) / 2 - 4.4 * sf, stamp, "F1", acPt, angle);
+    canvas.tag = "";
   }
 
   const payee = stripStars(String(data.CCT_PAYEE || "").trim());
   if (payee) {
     const f = fields.mmPayee || { left_mm: 32, top_mm: 26.5 };
+    canvas.tag = "mmPayee";
+    canvas.boxW = num(f.width_mm ?? 133) * sf;
     payeeTextLines(payee, options, num(f.width_mm ?? 133) * sf, fPt).forEach(([line, size], index) => {
       canvas.draw_text(num(f.left_mm) * sf + ox, num(f.top_mm) * sf + oy + index * ((fPt * 1.2) / MM_TO_PT), line, "F1", size);
     });
+    canvas.tag = "";
+    canvas.boxW = 0;
   }
 
   const dateText = String(data.CCT_DATE || "").trim();
@@ -599,12 +660,16 @@ export function renderChequeFields(canvas, template, data, ox = 0, oy = 0, shift
         const spacing = Math.abs(num(fields.mmD2.left_mm) - num(fields.mmD1.left_mm));
         if (spacing <= 2.6 || fields.mmS1) {
           const f = fields.mmD1;
+          canvas.tag = "mmD1";
           canvas.draw_text(num(f.left_mm) * sf + ox, num(f.top_mm) * sf + oy, `${dt.dd}/${dt.mm}/${dt.yyyy}`, "F1", fPt);
+          canvas.tag = "";
         } else {
-          const boxes = (keys) => keys.filter((k) => fields[k]).map((k) => fields[k]).sort((a, b) => a.left_mm - b.left_mm);
+          const boxes = (keys) => keys.filter((k) => fields[k]).map((k) => ({ ...fields[k], key: k })).sort((a, b) => a.left_mm - b.left_mm);
           const put = (list, text) =>
             list.forEach((box, i) => {
+              canvas.tag = box.key;
               if (i < text.length) canvas.draw_text(box.left_mm * sf + ox, box.top_mm * sf + oy, text[i], "F1", fPt);
+              canvas.tag = "";
             });
           put(boxes(["mmD1", "mmD2"]), dt.dd);
           put(boxes(["mmM1", "mmM2"]), dt.mm);
@@ -612,7 +677,9 @@ export function renderChequeFields(canvas, template, data, ox = 0, oy = 0, shift
         }
       } else {
         const f = fields.mmDate || { left_mm: 124, top_mm: 20 };
+        canvas.tag = "mmDate";
         canvas.draw_text(num(f.left_mm) * sf + ox, num(f.top_mm) * sf + oy, `${dt.dd}/${dt.mm}/${dt.yyyy}`, "F1", fPt);
+        canvas.tag = "";
       }
     }
   }
@@ -620,7 +687,9 @@ export function renderChequeFields(canvas, template, data, ox = 0, oy = 0, shift
   const amount = num(data.CCT_AMOUNT || 0);
   if (amount > 0) {
     const f = fields.mmAmount || { left_mm: 122, top_mm: 45.5 };
+    canvas.tag = "mmAmount";
     canvas.draw_text(num(f.left_mm) * sf + ox, num(f.top_mm) * sf + oy, amountText(amount, options), "F1", fPt);
+    canvas.tag = "";
   }
 
   let wording = stripStars(String(data.CCT_WORDING || "").trim());
@@ -628,13 +697,20 @@ export function renderChequeFields(canvas, template, data, ox = 0, oy = 0, shift
   if (wording) {
     const [line1, line2] = splitWordsTwoLines(wording, maxWrap);
     const f1 = fields.mmAmountText1 || { left_mm: 13, top_mm: 36.8 };
+    canvas.tag = "mmAmountText1";
+    const leafW = num(canvas.widthMm || 297);
+    canvas.boxW = Math.max(20, num(f1.width_mm) > 0 ? num(f1.width_mm) * sf : leafW - 38 - num(f1.left_mm) * sf);
     canvas.draw_text(num(f1.left_mm) * sf + ox, num(f1.top_mm) * sf + oy + ls, options.words_prefix + line1 + (line2 ? "" : options.words_suffix), "F1", wordsPt);
     if (line2) {
       const f2 = fields.mmAmountText2 || { left_mm: 4, top_mm: 44.5 };
+      canvas.tag = "mmAmountText2";
+      canvas.boxW = Math.max(20, num(f2.width_mm) > 0 ? num(f2.width_mm) * sf : leafW - 46 - num(f2.left_mm) * sf);
       canvas.draw_text(num(f2.left_mm) * sf + ox, num(f2.top_mm) * sf + oy + 2 * ls, line2 + options.words_suffix, "F1", wordsPt);
     }
   }
 
+  canvas.tag = "";
+  canvas.boxW = 0;
   if ((data.CCT_NO_BEARER ?? "Y") === "Y") {
     const fp = fields.mmPayee || { left_mm: 32, top_mm: 26.5 };
     const fn = fields.mmNoBearer || { left_mm: 8, top_mm: fp.top_mm + 1.2 };
@@ -644,7 +720,9 @@ export function renderChequeFields(canvas, template, data, ox = 0, oy = 0, shift
       nx = 8;
       ny = num(fp.top_mm) + 1.2;
     }
+    canvas.tag = "mmNoBearer";
     canvas.draw_text(nx * sf + ox, ny * sf + oy, "XXXXXX", "F1", fPt);
+    canvas.tag = "";
   }
 }
 
@@ -666,6 +744,14 @@ function leafSize(template, account) {
 }
 function drawLeaf(canvas, template, data, account, baseX = 0, baseY = 0) {
   const a = accountNumbers(account);
+  if (account.CCAC_OUTLINE === true) {
+    // Test print on plain paper: the edge of the cheque leaf, so the writing can be held against a real cheque.
+    const [w, h] = leafSize(template, account);
+    canvas.set_stroke_color(0, 0, 0);
+    canvas.set_line_width(0.4);
+    for (const [x1, y1, x2, y2] of [[0, 0, w, 0], [w, 0, w, h], [w, h, 0, h], [0, h, 0, 0]])
+      canvas.draw_line(baseX + x1, baseY + y1, baseX + x2, baseY + y2);
+  }
   renderChequeFields(canvas, template, data, baseX + a.ox, baseY + a.oy, a.shift, a.font, a.scale, a.wrap, a.spacing, accountOptions(account, template.id));
 }
 export function chequePdf(template, data, account) {
@@ -690,6 +776,7 @@ export function directJob(template, data, account, mode, orientation) {
     baseY = Math.max(0, (pageH - h) / 2);
   }
   const collector = new DirectCollector();
+  collector.widthMm = w;
   drawLeaf(collector, template, data, account, baseX, baseY);
   return collector;
 }
@@ -762,23 +849,21 @@ export function chequePreview(template, data, account, followGuides = true) {
   const options = accountOptions(account, template.id);
   const printed = new SceneCanvas(width, height);
   drawLeaf(printed, template, data, account);
-  const sf = Math.max(0.5, a.scale / 100);
   const regions = {};
-  const texts = printed.items.filter((i) => i.k === "text");
-  for (const key of ["mmPayee", "mmAmount", "mmAmountText1", "mmAmountText2", "mmDate"]) {
-    const field = (template.fields || {})[key];
-    if (!field) continue;
-    const x = field.left_mm * sf + a.ox;
-    const y = field.top_mm * sf + a.oy + (key === "mmAmountText1" ? a.spacing : key === "mmAmountText2" ? 2 * a.spacing : 0);
-    for (const item of texts) {
-      const secondPayee = key === "mmPayee" && options.long_payee === "wrap" && Math.abs(item.y - y - (a.font * 1.2) / MM_TO_PT) < 0.011;
-      if (Math.abs(item.x - x) < 0.011 && (Math.abs(item.y - y) < 0.011 || secondPayee)) {
-        const base = item.y + item.size * 0.31;
-        const em = item.size / MM_TO_PT;
-        const box = [item.x, base - ASCENT * em, item.x + textWidthMm(item.text, item.size), base + DESCENT * em];
-        const prev = regions[key];
-        regions[key] = prev ? [Math.min(prev[0], box[0]), Math.min(prev[1], box[1]), Math.max(prev[2], box[2]), Math.max(prev[3], box[3])] : box;
-      }
+  const grow = (key, box) => {
+    const prev = regions[key];
+    regions[key] = prev ? [Math.min(prev[0], box[0]), Math.min(prev[1], box[1]), Math.max(prev[2], box[2]), Math.max(prev[3], box[3])] : box;
+  };
+  // Every piece of writing carries the name of the field that drew it, so each can be grabbed on its own.
+  for (const item of printed.items) {
+    if (!item.tag) continue;
+    if (item.k === "line") grow(item.tag, [Math.min(item.x1, item.x2), Math.min(item.y1, item.y2), Math.max(item.x1, item.x2), Math.max(item.y1, item.y2)]);
+    else if (item.k === "text") {
+      const base = item.y + item.size * 0.31;
+      const em = item.size / MM_TO_PT;
+      const width = textWidthMm(item.text, item.size);
+      const left = item.rtl && item.bw > 0 ? item.x + Math.max(0, item.bw - width) : item.x;
+      grow(item.tag, [left, base - ASCENT * em, left + width, base + DESCENT * em]);
     }
   }
   const hasPhoto = !!template.background_image;
@@ -806,12 +891,14 @@ export function prepare(request) {
   if (!isObject(template)) throw new Error("Invalid layout.");
   template = validateLayouts({ [template.id]: template })[template.id];
   const account = { ...request.account };
+  const outline = request.outline === true;
   for (const [key, low, high] of LIMITS) {
     const value = Number(account[key]);
     if (account[key] === null || account[key] === undefined || account[key] === "" || !Number.isFinite(value) || value < low || value > high)
       throw new Error("Invalid calibration: " + key);
     account[key] = value;
   }
+  if (outline) account.CCAC_OUTLINE = true;
   if (account.CCAC_WRAP_CHARS !== Math.trunc(account.CCAC_WRAP_CHARS)) throw new Error("Words line length must be a whole number.");
   const data = { ...request.cheque };
   const amount = money(data.CCT_AMOUNT ?? "0", data.CCT_CURRENCY ?? "AED", request.action !== "preview");

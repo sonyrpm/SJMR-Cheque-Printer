@@ -6,6 +6,8 @@ export type AppState = {
   config: WriterConfig;
   accounts: Account[];
   payees: string[];
+  payeeAr: Record<string, string>;
+  lastBackup: string | null;
   alerts: AlertSettings;
   summary: { accounts: number; cheques: number; payees: number };
   today: string;
@@ -55,7 +57,7 @@ export const api = {
   printers: () => call<{ printers: EnginePrinter[] }>("printers"),
   image: (data: string) => call<{ background: { format: "png"; data: string } }>("image", data),
   nextChequeNo: (accountId: string) => call<string | null>("nextChequeNo", accountId),
-  output: (input: { action: "direct" | "dialog" | "pdf"; request: EngineRequest; list: { accountId: string; layoutId: string } | null }) =>
+  output: (input: { action: "direct" | "dialog" | "pdf"; request: EngineRequest; list: { accountId: string; layoutId: string; payee?: string; arabic?: string } | null }) =>
     call<OutputResult>("output", input),
   templatePrinters: () => call<{ printers: TemplatePrinterInfo[] }>("templatePrinters"),
   templatePrint: (job: Record<string, unknown>) => call<{ ok: boolean; cancelled: boolean; message: string }>("templatePrint", job),
@@ -65,6 +67,8 @@ export const api = {
   saveDesign: (data: DesignInput) => call<WriterConfig>("saveDesign", data),
   saveAccount: (input: { id?: string; name: string; bankNo: string; currency: string; active?: boolean }) => call<Account>("saveAccount", input),
   deleteAccount: (id: string) => call<null>("deleteAccount", id),
+  setPayeeArabic: (input: { name: string; arabic: string }) => call<Record<string, string>>("setPayeeArabic", input),
+  restoreCheque: (cheque: Cheque) => call<Cheque>("restoreCheque", cheque),
   addPayee: (name: string) => call<string[]>("addPayee", name),
   removePayee: (name: string) => call<string[]>("removePayee", name),
   importPayees: (list: string[]) => call<{ added: number; payees: string[] }>("importPayees", list),

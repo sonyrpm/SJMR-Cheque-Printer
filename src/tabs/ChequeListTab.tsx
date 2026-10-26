@@ -4,6 +4,8 @@ import { Chip, Tick } from "@/components/bits";
 import { api, errorText } from "@/lib/api";
 import { useCw } from "@/lib/cw-context";
 import { STATUS_LABEL, alertSummary, dueInfo, type Cheque, type Status } from "../../shared/cheque-rules";
+import { printHtml, reportHtml } from "@/lib/cheque-report";
+import { defaultCalibration, engineRequest, type NativeLayout } from "@/lib/cheque-writer-model";
 
 type Filter = "all" | "pending" | "coming" | "attention" | "cleared" | "returned" | "cancelled";
 const CHIPS: [Filter, string][] = [
@@ -42,6 +44,7 @@ export function ChequeListTab({ initialFilter, onChanged }: { initialFilter: str
   const [notice, setNotice] = useState("");
   const [mark, setMark] = useState<{ ids: string[]; to: Status } | null>(null);
   const [details, setDetails] = useState<Cheque | null>(null);
+  const [undo, setUndo] = useState<{ text: string; run: () => Promise<void> } | null>(null);
   const today = state.today;
   const alerts = state.alerts;
 
@@ -100,9 +103,16 @@ export function ChequeListTab({ initialFilter, onChanged }: { initialFilter: str
   async function apply(ids: string[], to: Status, date: string, reason: string) {
     setError("");
     try {
+      const before = (rows ?? []).filter((r) => ids.includes(r.id));
       if (ids.length === 1) await api.setStatus({ id: ids[0], to, date, reason });
       else await api.setStatusMany({ ids, to, date, reason });
       setNotice(`${ids.length} cheque${ids.length === 1 ? "" : "s"} marked ${STATUS_LABEL[to].toLowerCase()}.`);
+      setUndo({
+        text: `${ids.length} cheque${ids.length === 1 ? "" : "s"} marked ${STATUS_LABEL[to].toLowerCase()}`,
+        run: async () => {
+          for (const r of before) await api.setStatus({ id: r.id, to: r.status, date: r.statusDate ?? undefined, reason: r.reason || undefined });
+        },
+      });
       setSelected(new Set());
       setMark(null);
       setDetails(null);
@@ -110,6 +120,14 @@ export function ChequeListTab({ initialFilter, onChanged }: { initialFilter: str
       onChanged();
     } catch (e) {
       throw e;
+    }
+  }
+  function printList() {
+    try {
+      const parts = [filter === "all" ? "All cheques" : CHIPS.find(([id]) => id === filter)?.[1] ?? "", accountId ? state.accounts.find((a) => a.id === accountId)?.name ?? "" : "", from || to ? `date ${from || "…"} to ${to || "…"}` : "", q ? `search "${q}"` : ""].filter(Boolean);
+      printHtml(reportHtml(shown, { title: "Cheque list", filter: parts.join(" · "), today }));
+    } catch (e) {
+      setError(errorText(e));
     }
   }
   function exportCsv() {
@@ -134,7 +152,16 @@ export function ChequeListTab({ initialFilter, onChanged }: { initialFilter: str
   return (
     <div className="space-y-2">
       {error && <Alert tone="danger">{error}</Alert>}
-      {notice && <Alert tone="success">{notice}</Alert>}
+      {notice && !undo && <Alert tone="success">{notice}</Alert>}
+      {undo && (
+        <Alert tone="success">
+          <span className="flex flex-wrap items-center gap-3">
+            <span>{undo.text}.</span>
+            <Button className="min-h-7 px-2 text-xs" variant="secondary" onClick={async () => { const u = undo; setUndo(null); setNotice(""); try { await u.run(); setNotice("Undone."); await load(); onChanged(); } catch (e) { setError(errorText(e)); } }}>Undo</Button>
+            <Button className="min-h-7 px-2 text-xs" variant="ghost" onClick={() => setUndo(null)}>OK</Button>
+          </span>
+        </Alert>
+      )}
       <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Show cheques">
         {CHIPS.map(([id, label]) => (
           <Chip key={id} active={filter === id} onClick={() => { setFilter(id); setSelected(new Set()); }}>
@@ -152,7 +179,8 @@ export function ChequeListTab({ initialFilter, onChanged }: { initialFilter: str
         </Field>
         <Field label="Cheque date from" className="w-36"><Input aria-label="Date from" type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></Field>
         <Field label="to" className="w-36"><Input aria-label="Date to" type="date" value={to} onChange={(e) => setTo(e.target.value)} /></Field>
-        <Button variant="secondary" onClick={exportCsv} disabled={!shown.length}>Export CSV</Button>
+        <Button variant="secondary" onClick={printList} disabled={!shown.length}>Print list</Button>
+        <Button variant="secondary" onClick={exportCsv} disabled={!shown.length}>Export to Excel (CSV)</Button>
       </div>
       {!!picked.length && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-1.5">
@@ -211,7 +239,7 @@ export function ChequeListTab({ initialFilter, onChanged }: { initialFilter: str
         {shown.length} cheque{shown.length === 1 ? "" : "s"} shown{pendingTotals.length ? ` · pending total ${pendingTotals.join(" + ")}` : ""}.
       </p>
       {mark && <MarkDialog key={mark.ids.join()} mark={mark} today={today} onClose={() => setMark(null)} onApply={apply} />}
-      {details && <DetailsDialog cheque={details} onClose={() => setDetails(null)} onMark={(to) => { setMark({ ids: [details.id], to }); setDetails(null); }} onChanged={async () => { await load(); onChanged(); }} />}
+      {details && <DetailsDialog cheque={details} onClose={() => setDetails(null)} onMark={(to) => { setMark({ ids: [details.id], to }); setDetails(null); }} onChanged={async () => { await load(); onChanged(); }} onRemoved={(c) => setUndo({ text: `Cheque ${c.chequeNo} removed from the list`, run: async () => { await api.restoreCheque(c); } })} onReprinted={(m) => setNotice(m)} />}
     </div>
   );
 }
@@ -268,7 +296,8 @@ function MarkDialog({ mark, today, onClose, onApply }: { mark: { ids: string[]; 
   );
 }
 
-function DetailsDialog({ cheque, onClose, onMark, onChanged }: { cheque: Cheque; onClose: () => void; onMark: (to: Status) => void; onChanged: () => Promise<void> }) {
+function DetailsDialog({ cheque, onClose, onMark, onChanged, onRemoved, onReprinted }: { cheque: Cheque; onClose: () => void; onMark: (to: Status) => void; onChanged: () => Promise<void>; onRemoved: (c: Cheque) => void; onReprinted: (message: string) => void }) {
+  const { state } = useCw();
   const [note, setNote] = useState(cheque.note);
   const [date, setDate] = useState(cheque.chequeDate ?? "");
   const [blank, setBlank] = useState(!cheque.chequeDate);
@@ -298,7 +327,21 @@ function DetailsDialog({ cheque, onClose, onMark, onChanged }: { cheque: Cheque;
       footer={
         <>
           {cheque.status === "pending" && <Button variant="secondary" onClick={() => onMark("cancelled")}>Cancel this cheque</Button>}
-          <Button variant="danger" disabled={busy} onClick={() => (confirmDelete ? void run(async () => { await api.deleteCheque(cheque.id); await onChanged(); onClose(); }) : setConfirmDelete(true))}>
+          {cheque.status === "pending" && (
+            <Button variant="secondary" disabled={busy} title="Prints this cheque again with the same number, for example after a paper jam" onClick={() => void run(async () => {
+              const layoutId = cheque.layoutId || state.config.banks[cheque.accountId]?.layoutId || "";
+              const layout = state.config.layouts[layoutId] as NativeLayout | undefined;
+              const account = state.accounts.find((a) => a.id === cheque.accountId);
+              if (!layout || !account) throw new Error("The bank layout of this cheque is not available. Print it again from Write & Print.");
+              const cal = structuredClone(state.config.banks[cheque.accountId]?.calibration[layoutId] || defaultCalibration(layoutId));
+              const values = { number: cheque.chequeNo, payee: cheque.payee, amount: cheque.amount, date: cheque.chequeDate ?? state.today, blankDate: !cheque.chequeDate, crossed: true, crossing: ((cheque as Cheque & { crossing?: number }).crossing as 1 | 2 | 3) || 1, noBearer: false, payeeCaps: false, style: "spelled_fils" as const, wording: cheque.wording || null };
+              const result = await api.output({ action: "direct", request: engineRequest(layout, cal, values, { id: account.id, code: "", name: account.name, bankNo: account.bankNo }, cheque.currency), list: { accountId: cheque.accountId, layoutId } });
+              onReprinted(result.cancelled ? "Reprint cancelled." : `Cheque ${cheque.chequeNo} printed again.`);
+              await onChanged();
+              onClose();
+            })}>Reprint</Button>
+          )}
+          <Button variant="danger" disabled={busy} onClick={() => (confirmDelete ? void run(async () => { await api.deleteCheque(cheque.id); onRemoved(cheque); await onChanged(); onClose(); }) : setConfirmDelete(true))}>
             {confirmDelete ? "Yes, remove from list" : "Remove from list"}
           </Button>
           <Button disabled={busy} onClick={() => void run(async () => {

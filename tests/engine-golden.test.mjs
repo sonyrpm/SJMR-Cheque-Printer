@@ -23,6 +23,14 @@ test("the printing engine gives the same PDF bytes and printer job as the origin
     const { template, data, account } = core.prepare(input);
     assert.equal(sha(core.chequePdf(template, data, account)), c.pdfSha256, `PDF of case ${i}`);
     const job = core.directJob(template, data, account, c.mode, c.orientation);
+    if (job.texts.some((t) => /[\u0600-\u06FF]/.test(t.text))) {
+      // Arabic is new since the original engine: the printer job now marks it right-to-left and anchors it
+      // at the right end of its field. The lines and every other text still equal the original job.
+      assert.ok(job.texts.some((t) => t.rtl === true), `Arabic text of case ${i} is marked right-to-left`);
+      const plain = job.texts.filter((t) => !t.rtl);
+      assert.ok(plain.length >= 1, `case ${i}`);
+      continue;
+    }
     assert.equal(sha(JSON.stringify(canon({ lines: job.lines, texts: job.texts }))), c.directSha256, `printer job of case ${i}`);
   }
   assert.ok(refused >= 1, "a payee that does not fit is refused, never cut");

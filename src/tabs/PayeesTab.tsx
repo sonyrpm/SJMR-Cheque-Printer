@@ -3,6 +3,7 @@ import { Alert, Button, Card, Field, Input } from "@/components/ui";
 import { api, errorText } from "@/lib/api";
 import { useCw } from "@/lib/cw-context";
 import { parsePayeeFile } from "@/lib/cheque-payee-list";
+import { suggestArabic } from "@/lib/arabic-names";
 
 export function PayeesTab() {
   const { state, reload } = useCw();
@@ -35,7 +36,7 @@ export function PayeesTab() {
       {notice && <Alert tone="success">{notice}</Alert>}
       <Card className="space-y-2">
         <h2 className="text-sm font-semibold">Payee list · {state.payees.length}</h2>
-        <p className="text-xs text-muted">Names saved here are offered while writing a cheque. A payee is added automatically when a cheque is added to the list.</p>
+        <p className="text-xs text-muted">Names saved here are offered while writing a cheque. A payee is added automatically when a cheque is added to the list. Give a payee an <strong>Arabic name</strong> and it is filled in when you write a cheque in Arabic.</p>
         <div className="flex flex-wrap items-end gap-2">
           <Field label="Add a payee" className="min-w-56 flex-1"><Input aria-label="New payee" maxLength={500} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) void run(async () => { await api.addPayee(name); setName(""); }); }} /></Field>
           <Button disabled={!name.trim()} onClick={() => void run(async () => { await api.addPayee(name); setName(""); })}>Add</Button>
@@ -60,7 +61,11 @@ export function PayeesTab() {
           <table className="cw-table w-full text-[13px]">
             <tbody>
               {list.slice(0, 500).map((p) => (
-                <tr key={p}><td>{p}</td><td className="w-20 text-right"><Button variant="ghost" className="min-h-7 px-2 text-xs" onClick={() => void run(async () => { await api.removePayee(p); })}>Remove</Button></td></tr>
+                <tr key={p}>
+                  <td className="w-1/2">{p}</td>
+                  <td><ArabicCell name={p} value={state.payeeAr[p] ?? ""} onSave={(ar) => run(async () => { await api.setPayeeArabic({ name: p, arabic: ar }); })} /></td>
+                  <td className="w-20 text-right"><Button variant="ghost" className="min-h-7 px-2 text-xs" onClick={() => void run(async () => { await api.removePayee(p); })}>Remove</Button></td>
+                </tr>
               ))}
               {!list.length && <tr><td className="p-4 text-center text-muted">{state.payees.length ? "No payee matches." : "No payees yet."}</td></tr>}
             </tbody>
@@ -69,5 +74,25 @@ export function PayeesTab() {
         {list.length > 500 && <p className="text-xs text-muted">Showing the first 500 of {list.length}. Search to narrow the list.</p>}
       </Card>
     </div>
+  );
+}
+
+function ArabicCell({ name, value, onSave }: { name: string; value: string; onSave: (arabic: string) => Promise<void> }) {
+  const [text, setText] = useState(value);
+  const [open, setOpen] = useState(false);
+  if (!open)
+    return (
+      <span className="flex items-center gap-2">
+        <span dir="auto" lang="ar" className="min-w-0 flex-1 truncate">{value || <span className="text-subtle">no Arabic name</span>}</span>
+        <Button variant="ghost" className="min-h-7 px-2 text-xs" onClick={() => { setText(value); setOpen(true); }}>{value ? "Edit" : "Add Arabic"}</Button>
+      </span>
+    );
+  return (
+    <span className="flex items-center gap-1">
+      <Input aria-label={`Arabic name of ${name}`} dir="auto" lang="ar" maxLength={500} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void onSave(text).then(() => setOpen(false)); if (e.key === "Escape") setOpen(false); }} />
+      <Button variant="secondary" className="min-h-7 px-2 text-xs" title="Suggest a first Arabic spelling. Check it." onClick={() => setText(suggestArabic(name))}>Suggest</Button>
+      <Button className="min-h-7 px-2 text-xs" onClick={() => void onSave(text).then(() => setOpen(false))}>Save</Button>
+      <Button variant="ghost" className="min-h-7 px-2 text-xs" onClick={() => setOpen(false)}>Cancel</Button>
+    </span>
   );
 }

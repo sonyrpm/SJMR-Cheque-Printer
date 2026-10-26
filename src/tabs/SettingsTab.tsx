@@ -4,6 +4,7 @@ import { Tick } from "@/components/bits";
 import { api, errorText, type ImportReport } from "@/lib/api";
 import { useCw } from "@/lib/cw-context";
 import type { AlertSettings } from "../../shared/cheque-rules";
+import { TEXT_SIZES, applyLook, getPref, setPref } from "@/lib/prefs";
 
 export function SettingsTab({ onChanged }: { onChanged: () => void }) {
   const { state, reload } = useCw();
@@ -24,6 +25,9 @@ export function SettingsTab({ onChanged }: { onChanged: () => void }) {
       setError(errorText(e));
     }
   }
+  const [theme, setTheme] = useState(getPref("cw.theme", "light"));
+  const [size, setSize] = useState(getPref("cw.textSize", "normal"));
+  const days = state.lastBackup ? Math.round((Date.parse(state.today) - Date.parse(state.lastBackup)) / 86400000) : null;
   const set = <K extends keyof AlertSettings>(key: K, value: AlertSettings[K]) => setAlerts((old) => ({ ...old, [key]: value }));
   return (
     <div className="grid items-start gap-3 lg:grid-cols-2">
@@ -51,7 +55,25 @@ export function SettingsTab({ onChanged }: { onChanged: () => void }) {
         <p className="text-xs text-muted">Alerts cover Pending cheques only. A cleared, returned or cancelled cheque never raises an alert.</p>
       </Card>
       <Card className="space-y-2">
+        <h2 className="text-sm font-semibold">Appearance</h2>
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Text size">
+            <select aria-label="Text size" className="h-9 w-full rounded-md border border-border bg-surface px-2 text-[13px]" value={size} onChange={(e) => { setSize(e.target.value); setPref("cw.textSize", e.target.value); applyLook(); }}>
+              {TEXT_SIZES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+            </select>
+          </Field>
+          <Field label="Colours">
+            <select aria-label="Colours" className="h-9 w-full rounded-md border border-border bg-surface px-2 text-[13px]" value={theme} onChange={(e) => { setTheme(e.target.value); setPref("cw.theme", e.target.value); applyLook(); }}>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </Field>
+        </div>
+        <p className="text-xs text-muted">Kept on this PC. Press F1 any time for help.</p>
+      </Card>
+      <Card className="space-y-2">
         <h2 className="text-sm font-semibold">Data</h2>
+        <p className="text-xs text-muted">A copy of the data is also saved by itself once a day beside the data file (the last 7 days are kept as auto-backup-….db). {days === null ? "No copy has been saved yet." : days <= 0 ? "Last copy: today." : `Last copy: ${days} day${days === 1 ? "" : "s"} ago.`}</p>
         <p className="text-xs text-muted break-all">Data file: {about?.dataFolder ?? "…"} {about?.portable ? "(portable: stays beside the program)" : ""}</p>
         <p className="text-xs text-muted">{state.summary.accounts} bank account(s) · {state.summary.cheques} cheque(s) in the list · {state.summary.payees} payee(s)</p>
         <div className="flex flex-wrap gap-2">
@@ -73,7 +95,7 @@ export function SettingsTab({ onChanged }: { onChanged: () => void }) {
         )}
       </Card>
       <Card className="lg:col-span-2">
-        <p className="text-xs text-muted">SJMR Cheque Writer {about?.version ?? ""} · printing engine shared with SJMR Accounting · info@sjmrsoft.com</p>
+        <p className="text-xs text-muted">SJMR Cheque Writer {about?.version ?? ""} · info@sjmrsoft.com · New versions: get.sjmrsoft.com/cheque (this program never connects to the internet by itself).</p>
       </Card>
     </div>
   );

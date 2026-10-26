@@ -8,7 +8,7 @@ test("window: first account, write, print with and without 'Add cheque to list',
   t.after(() => h.close());
   const { page } = h;
   await h.open();
-  await page.getByText("Add a bank account first").waitFor();
+  await page.getByText("Welcome to SJMR Cheque Writer").waitFor();
   // The top banner carries the branding in normal-size text.
   const branding = page.getByLabel("Branding");
   assert.match(await branding.innerText(), /Powered by sonyrpm\s+www\.sjmrsoft\.com · info@sjmrsoft\.com/);
@@ -28,18 +28,19 @@ test("window: first account, write, print with and without 'Add cheque to list',
   // Write & Print.
   await page.getByRole("tab", { name: "Write & Print" }).click();
   await page.getByAltText("Cheque PDF preview").waitFor();
+  await page.getByLabel(/Show advanced options/).check();
   await page.getByLabel("Cheque amount").fill("1250.50");
   const addBox = page.getByLabel("Add cheque to list");
   assert.equal(await addBox.isChecked(), true, "ticked by default");
   // Payee required.
-  await page.getByRole("button", { name: "Print directly" }).click();
+  await page.getByRole("button", { name: "Print cheque" }).click();
   await page.getByText("Enter a payee, cheque number and positive amount.").waitFor();
   await page.getByPlaceholder("Type a name or pick from the payee list").fill("al noor trading");
   await page.getByLabel("Amount in words").waitFor();
   await page.waitForFunction(() => /Thousand/.test(document.querySelector('textarea[aria-label="Amount in words"]').value));
   await page.waitForTimeout(700);
   await h.shot("03-write");
-  await page.getByRole("button", { name: "Print directly" }).click();
+  await page.getByRole("button", { name: "Print cheque" }).click();
   await page.getByText(/Cheque sent to the printer\. Added to the cheque list/).waitFor();
   assert.equal(h.sent.length, 1);
   assert.equal((await h.store.cheques()).length, 1);
@@ -47,10 +48,18 @@ test("window: first account, write, print with and without 'Add cheque to list',
   assert.equal(await page.getByLabel("Cheque number").inputValue(), "000002", "number counts up after a listed cheque");
   assert.deepEqual(await h.store.payees(), ["AL NOOR TRADING"], "payee remembered");
 
+  // The form is ready for the next cheque: payee and amount are empty, the cursor is in the payee box.
+  assert.equal(await page.getByPlaceholder("Type a name or pick from the payee list").inputValue(), "");
+  assert.equal(await page.getByLabel("Cheque amount").inputValue(), "");
+  await page.waitForFunction(() => document.activeElement?.getAttribute("placeholder")?.startsWith("Type a name"));
+  await page.getByPlaceholder("Type a name or pick from the payee list").fill("al noor trading");
+  await page.getByLabel("Cheque amount").fill("1250.50");
+  await page.waitForTimeout(700);
+
   // Unticked: only printed.
   await addBox.uncheck();
   await page.getByText("Print only: this cheque is not added to the Cheque List.").waitFor();
-  await page.getByRole("button", { name: "Print directly" }).click();
+  await page.getByRole("button", { name: "Print cheque" }).click();
   await page.getByText("Cheque sent to the printer.", { exact: true }).waitFor();
   assert.equal(h.sent.length, 2);
   assert.equal((await h.store.cheques()).length, 1, "nothing added");

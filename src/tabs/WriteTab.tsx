@@ -1,12 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { Alert, Button, Card, Field, Input, Select, Textarea } from "@/components/ui";
 import { SearchSelect } from "@/components/search-select";
 import { Tick } from "@/components/bits";
 import { api, errorText } from "@/lib/api";
 import { useCw } from "@/lib/cw-context";
 import { drawChequePreview, photoToPng } from "@/lib/cheque-preview-draw";
+import { getPref, setPref } from "@/lib/prefs";
+import { suggestArabic } from "@/lib/arabic-names";
 import {
   defaultCalibration,
+  dragKeys,
+  dragLabel,
   engineRequest,
   moveFields,
   nextChequeNumber,
@@ -51,7 +55,7 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
     crossing: 1,
     noBearer: false,
     payeeCaps: true,
-    style: "spelled_fils",
+    style: getPref("cw.lang", "en") === "ar" ? "AR" : "spelled_fils",
     wording: null,
   });
   const [addToList, setAddToList] = useState(true);
@@ -64,6 +68,11 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
   const [notice, setNotice] = useState("");
   const [printers, setPrinters] = useState<EnginePrinter[]>([]);
   const [printersNote, setPrintersNote] = useState("");
+  const [advanced, setAdvanced] = useState(() => getPref("cw.advanced", "0") === "1");
+  const [lang, setLang] = useState<"en" | "ar">(() => (getPref("cw.lang", "en") === "ar" ? "ar" : "en"));
+  const [payeeAr, setPayeeAr] = useState("");
+  const [hover, setHover] = useState<{ key: string; single: boolean } | null>(null);
+  const [dragging, setDragging] = useState("");
   const running = useRef(false);
   const drag = useRef<{ x: number; y: number; w: number; h: number; cal: Calibration; key: string } | null>(null);
 
@@ -119,9 +128,10 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
     setCal((old) => (old.printer ? old : { ...old, printer: p.name, tray: p.default_tray || p.trays?.[0]?.name || old.tray }));
   }, [printers, cal.printer]);
 
+  const printedPayee = lang === "ar" ? payeeAr : values.payee;
   const request = useMemo(
-    () => (account && layout ? engineRequest(layout, cal, values, { id: account.id, code: "", name: account.name, bankNo: account.bankNo }, currency) : null),
-    [account, layout, cal, values, currency],
+    () => (account && layout ? engineRequest(layout, cal, { ...values, payee: printedPayee }, { id: account.id, code: "", name: account.name, bankNo: account.bankNo }, currency) : null),
+    [account, layout, cal, values, currency, printedPayee],
   );
   useEffect(() => {
     if (!request || !layout) return;
@@ -160,9 +170,9 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
   async function output(action: "direct" | "dialog" | "pdf") {
     if (!request || !account || previewBusy || previewError) return;
     await act(async () => {
-      if (!values.payee.trim() || !values.number.trim() || !(Number(values.amount.replaceAll(",", "")) > 0))
-        throw new Error("Enter a payee, cheque number and positive amount.");
-      const result = await api.output({ action, request, list: addToList ? { accountId: account.id, layoutId } : null });
+      if (!printedPayee.trim() || !values.number.trim() || !(Number(values.amount.replaceAll(",", "")) > 0))
+        throw new Error(lang === "ar" && !payeeAr.trim() ? "Type the payee name in Arabic (or press Suggest)." : "Enter a payee, cheque number and positive amount.");
+      const result = await api.output({ action, request, list: addToList ? { accountId: account.id, layoutId, ...(lang === "ar" && values.payee.trim() ? { payee: values.payee.trim(), arabic: payeeAr.trim() } : {}) } : null });
       setNotice(result.message);
       if (result.listError) setError(`The cheque was printed but could not be added to the list: ${result.listError}`);
       if (result.saved) {
@@ -173,9 +183,51 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
         } catch {
           // A cheque number with letters is not counted up.
         }
+        newCheque(true);
       }
     });
   }
+  /** Clears the payee and amount for the next cheque and puts the cursor in the payee box (the number is already counted up). */
+  function newCheque(keepNumber = false) {
+    setValues((old) => ({ ...old, payee: "", amount: "", wording: null, number: keepNumber ? old.number : old.number }));
+    setPayeeAr("");
+    window.setTimeout(() => document.querySelector<HTMLInputElement>('input[placeholder^="Type a name"]')?.focus(), 50);
+  }
+  /** Prints a sample on plain paper with the cheque outline, so it can be held against a real cheque leaf. */
+  async function testPrint() {
+    if (!layout || !account || busy) return;
+    await act(async () => {
+      const sample = { ...values, payee: lang === "ar" ? "اسم المستفيد للتجربة" : "TEST PRINT - SAMPLE PAYEE", amount: "1234.56", wording: null, blankDate: false, date: today };
+      const test = engineRequest(layout, cal, sample, { id: account.id, code: "", name: account.name, bankNo: account.bankNo }, currency, { outline: true });
+      const result = await api.output({ action: "direct", request: test, list: null });
+      setNotice(result.cancelled ? "Test print cancelled." : "Test sheet sent to the printer. Put plain paper in, then hold it against a real cheque leaf to check the places.");
+    });
+  }
+  const outputRef = useRef<(a: "direct" | "dialog" | "pdf") => Promise<void>>(async () => undefined);
+  outputRef.current = output;
+  const newRef = useRef(newCheque);
+  newRef.current = newCheque;
+  useEffect(() => {
+    const keys = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      const visible = document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.startsWith("Write");
+      if (!visible || document.querySelector('[role="dialog"]')) return;
+      if (e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        void outputRef.current("direct");
+      } else if (e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        newRef.current(false);
+      }
+    };
+    window.addEventListener("keydown", keys);
+    return () => window.removeEventListener("keydown", keys);
+  }, []);
+  const chooseLang = useCallback((next: "en" | "ar") => {
+    setLang(next);
+    setPref("cw.lang", next);
+    setValues((old) => ({ ...old, style: next === "ar" ? "AR" : "spelled_fils", wording: null }));
+  }, []);
   async function saveCalibration() {
     if (!account) return;
     await act(async () => {
@@ -208,27 +260,76 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
   function pointerDown(e: PointerEvent<SVGSVGElement>) {
     if (!preview || busy || previewBusy) return;
     const box = e.currentTarget.getBoundingClientRect();
-    drag.current = { x: e.clientX, y: e.clientY, w: box.width, h: box.height, cal: structuredClone(cal), key: (e.target as SVGElement).getAttribute("data-field") || "all" };
+    const field = (e.target as SVGElement).getAttribute("data-field");
+    // One field per drag: the one under the pointer. Empty space moves all the writing.
+    const keys = field ? dragKeys(field, e.shiftKey) : null;
+    drag.current = { x: e.clientX, y: e.clientY, w: box.width, h: box.height, cal: structuredClone(cal), key: keys ? keys.join(",") : "all" };
+    setDragging(field ? dragLabel(field, e.shiftKey, !!preview.hitRegions.mmM1) : "all the writing");
     e.currentTarget.setPointerCapture(e.pointerId);
   }
   function pointerMove(e: PointerEvent<SVGSVGElement>) {
     const start = drag.current;
-    if (!start || !preview) return;
+    if (!start) {
+      const field = (e.target as SVGElement).getAttribute?.("data-field") || "";
+      setHover((old) => (old?.key === field && old.single === e.shiftKey ? old : field ? { key: field, single: e.shiftKey } : null));
+      return;
+    }
+    if (!preview) return;
     const dx = ((e.clientX - start.x) / start.w) * preview.widthMm,
       dy = ((e.clientY - start.y) / start.h) * preview.heightMm;
     setCal(
       start.key === "all"
         ? { ...start.cal, x: Math.round((start.cal.x + dx) * 1000) / 1000, y: Math.round((start.cal.y + dy) * 1000) / 1000 }
-        : moveFields(start.cal, [start.key], dx, dy),
+        : moveFields(start.cal, start.key.split(","), dx, dy),
     );
   }
+  function pointerEnd() {
+    drag.current = null;
+    setDragging("");
+  }
+
+  const warnings = useMemo(() => {
+    const out: string[] = [];
+    const amount = Number(values.amount.replaceAll(",", ""));
+    if (amount >= 1_000_000) out.push(`Large amount: ${currency} ${amount.toLocaleString("en-US")}. Check it before printing.`);
+    if (!values.blankDate && values.date) {
+      const days = Math.round((Date.parse(values.date) - Date.parse(today)) / 86400000);
+      if (days > 183) out.push("The cheque date is more than 6 months ahead.");
+      if (days < -183) out.push("The cheque date is more than 6 months ago. Banks may refuse an old (stale) cheque.");
+    }
+    const saved = cal.printer && printers.length && !printers.some((p) => p.name === cal.printer);
+    if (saved) out.push(`The printer saved for this bank ("${cal.printer}") is not on this PC. Choose a printer before printing.`);
+    return out;
+  }, [values.amount, values.date, values.blankDate, today, currency, cal.printer, printers]);
+  const nearPayee = useMemo(() => {
+    const typed = values.payee.trim();
+    if (lang === "ar" || typed.length < 4 || payees.some((p) => p.toLowerCase() === typed.toLowerCase())) return "";
+    const low = typed.toLowerCase();
+    let best = "";
+    let bestScore = 3;
+    for (const name of payees.slice(0, 5000)) {
+      if (Math.abs(name.length - typed.length) > 2) continue;
+      const d = editDistance(low, name.toLowerCase());
+      if (d < bestScore) (bestScore = d), (best = name);
+    }
+    return best;
+  }, [values.payee, payees, lang]);
 
   if (!activeAccounts.length)
     return (
-      <Alert tone="warn">
-        Add a bank account first.{" "}
-        <Button variant="secondary" onClick={() => go("banks")}>Go to Banks &amp; Layouts</Button>
-      </Alert>
+      <Card className="mx-auto max-w-2xl space-y-3">
+        <h2 className="text-base font-semibold">Welcome to SJMR Cheque Writer</h2>
+        <p className="text-muted">Three steps and you can print your first cheque:</p>
+        <ol className="list-decimal space-y-1.5 pl-5">
+          <li><strong>Add your bank account</strong> on the Banks &amp; Layouts tab (name and account number).</li>
+          <li><strong>Choose the bank layout</strong> that matches your cheque book (the list has most UAE banks).</li>
+          <li><strong>Print a test sheet</strong> on plain paper (button "Test print" on this screen), hold it against a cheque and move the writing with the mouse until it fits. It is remembered for this bank.</li>
+        </ol>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => go("banks")}>Start: add a bank account</Button>
+          <Button variant="secondary" onClick={() => go("settings")}>I have the old Cheque Printer: import it</Button>
+        </div>
+      </Card>
     );
 
   const payeeItems = payees.map((name) => ({ id: name, name }));
@@ -279,7 +380,7 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
               </Field>
               <div className="pb-2"><Tick label="Blank date" value={values.blankDate} onChange={(v) => setValue("blankDate", v)} /></div>
             </div>
-            <Field label="Payee">
+            <Field label={lang === "ar" ? "Payee name (English, for the payee list)" : "Payee"}>
               <SearchSelect
                 items={payeeItems}
                 value=""
@@ -289,49 +390,91 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
                 placeholder="Type a name or pick from the payee list"
                 getLabel={(r) => r.name}
                 onQueryChange={(v) => setValue("payee", v)}
-                onChange={(_id, row) => row && setValue("payee", row.name)}
+                onChange={(_id, row) => {
+                  if (!row) return;
+                  setValue("payee", row.name);
+                  if (state.payeeAr[row.name]) setPayeeAr(state.payeeAr[row.name]);
+                }}
               />
             </Field>
-            <Tick label="Payee in capital letters" value={values.payeeCaps} onChange={(v) => setValue("payeeCaps", v)} />
+            {nearPayee && (
+              <p className="text-xs text-warn">
+                Did you mean <button type="button" className="font-semibold underline" onClick={() => { setValue("payee", nearPayee); if (state.payeeAr[nearPayee]) setPayeeAr(state.payeeAr[nearPayee]); }}>{nearPayee}</button>?
+              </p>
+            )}
+            <Field label="Cheque language">
+              <Select aria-label="Cheque language" value={lang} onChange={(e) => chooseLang(e.target.value as "en" | "ar")}>
+                <option value="en">English</option>
+                <option value="ar">Arabic (العربية): payee and amount in words</option>
+              </Select>
+            </Field>
+            {lang === "ar" && (
+              <Field label="Payee name in Arabic">
+                <div className="flex gap-2">
+                  <Input aria-label="Payee name in Arabic" dir="auto" lang="ar" maxLength={500} placeholder="اكتب اسم المستفيد" value={payeeAr} onChange={(e) => setPayeeAr(e.target.value)} />
+                  <Button variant="secondary" disabled={!values.payee.trim()} title="Suggests an Arabic spelling of the English name. Check it before printing." onClick={() => setPayeeAr(state.payeeAr[values.payee.trim()] || suggestArabic(values.payee))}>Suggest</Button>
+                </div>
+                <span className="text-[11px] text-muted">You can type Arabic directly. "Suggest" gives a first spelling of the English name: always check it. Saved with the payee for next time.</span>
+              </Field>
+            )}
+            {advanced && <Tick label="Payee in capital letters" value={values.payeeCaps} onChange={(v) => setValue("payeeCaps", v)} />}
             <div className="grid grid-cols-2 gap-2">
               <Field label={`Amount (${currency})`}>
                 <Input aria-label="Cheque amount" inputMode="decimal" value={values.amount} onChange={(e) => setValues((old) => ({ ...old, amount: e.target.value, wording: null }))} />
               </Field>
-              <Field label="Wording style">
-                <Select aria-label="Wording style" value={values.style} onChange={(e) => setValues((old) => ({ ...old, style: e.target.value as WriterValues["style"], wording: null }))}>
-                  <option value="spelled_fils">Spelled</option>
-                  <option value="standard">75/100</option>
-                  <option value="with_currency">Currency</option>
-                  <option value="AR">Arabic</option>
-                </Select>
-              </Field>
+              {advanced && (
+                <Field label="Wording style">
+                  <Select aria-label="Wording style" value={values.style} onChange={(e) => setValues((old) => ({ ...old, style: e.target.value as WriterValues["style"], wording: null }))}>
+                    <option value="spelled_fils">Spelled</option>
+                    <option value="standard">75/100</option>
+                    <option value="with_currency">Currency</option>
+                    <option value="AR">Arabic</option>
+                  </Select>
+                </Field>
+              )}
             </div>
-            <Field label="Amount in words">
-              <Textarea aria-label="Amount in words" rows={2} value={values.wording ?? preview?.words ?? ""} onChange={(e) => setValue("wording", e.target.value)} />
-            </Field>
-            <Button variant="ghost" className="min-h-7" onClick={() => setValue("wording", null)}>Automatic wording</Button>
+            {advanced ? (
+              <>
+                <Field label="Amount in words">
+                  <Textarea aria-label="Amount in words" dir="auto" rows={2} value={values.wording ?? preview?.words ?? ""} onChange={(e) => setValue("wording", e.target.value)} />
+                </Field>
+                <Button variant="ghost" className="min-h-7" onClick={() => setValue("wording", null)}>Automatic wording</Button>
+              </>
+            ) : (
+              <p className="text-xs text-muted" dir="auto">{preview?.words}</p>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <Tick label="Crossed cheque" value={values.crossed} onChange={(v) => setValue("crossed", v)} />
-              <Tick label="Strike bearer" value={values.noBearer} onChange={(v) => setValue("noBearer", v)} />
+              {advanced && <Tick label="Strike bearer" value={values.noBearer} onChange={(v) => setValue("noBearer", v)} />}
             </div>
-            <Field label="Security crossing">
-              <Select value={values.crossing} onChange={(e) => setValue("crossing", Number(e.target.value))}>
-                <option value={1}>A/C PAYEE ONLY</option>
-                <option value={2}>NOT NEGOTIABLE</option>
-                <option value={3}>A/C PAYEE ONLY — NOT NEGOTIABLE</option>
-              </Select>
-            </Field>
+            {advanced && (
+              <Field label="Security crossing">
+                <Select value={values.crossing} onChange={(e) => setValue("crossing", Number(e.target.value))}>
+                  <option value={1}>A/C PAYEE ONLY</option>
+                  <option value={2}>NOT NEGOTIABLE</option>
+                  <option value={3}>A/C PAYEE ONLY — NOT NEGOTIABLE</option>
+                </Select>
+              </Field>
+            )}
           </Card>
           <div className="min-w-0 space-y-3">
             <Card className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold">Cheque preview</h2>
-                <span className="text-xs text-muted">{previewBusy ? "Updating…" : "Drag a field to move it, or drag the cheque to move all writing"}</span>
+                <span className="text-xs text-muted" aria-live="polite">
+                  {previewBusy
+                    ? "Updating…"
+                    : dragging
+                      ? `Moving: ${dragging}`
+                      : hover
+                        ? `Drag to move: ${dragLabel(hover.key, hover.single, !!preview?.hitRegions.mmM1)}${/^mm[DMY]\d$/.test(hover.key) && !hover.single ? " (hold Shift for one box)" : ""}`
+                        : "Drag any writing to move just that field. Drag an empty place to move all the writing."}
+                </span>
               </div>
               {previewError && <Alert tone="danger">{previewError}</Alert>}
               {preview ? (
                 <div className="relative w-full overflow-hidden rounded-md border border-border bg-sunken" style={{ aspectRatio: `${preview.widthMm}/${preview.heightMm}` }}>
-                  <img alt="Cheque PDF preview" className="block h-full w-full" draggable={false} src={`data:image/png;base64,${preview.png}`} />
+                  <img alt="Cheque PDF preview" dir="ltr" className="block h-full w-full" draggable={false} src={`data:image/png;base64,${preview.png}`} />
                   <svg
                     role="img"
                     aria-label="Drag cheque writing or individual fields"
@@ -340,12 +483,13 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
                     style={{ touchAction: "none", cursor: "move" }}
                     onPointerDown={pointerDown}
                     onPointerMove={pointerMove}
-                    onPointerUp={() => (drag.current = null)}
-                    onPointerCancel={() => (drag.current = null)}
+                    onPointerUp={pointerEnd}
+                    onPointerCancel={pointerEnd}
+                    onPointerLeave={() => !drag.current && setHover(null)}
                   >
                     {Object.entries(preview.hitRegions).map(([key, b]) => (
-                      <rect key={key} data-field={key} x={b[0] - 1} y={b[1] - 1} width={Math.max(2, b[2] - b[0] + 2)} height={Math.max(2, b[3] - b[1] + 2)} fill="transparent">
-                        <title>Move {key}</title>
+                      <rect key={key} className="cw-hit" data-field={key} x={b[0] - 1} y={b[1] - 1} width={Math.max(2, b[2] - b[0] + 2)} height={Math.max(2, b[3] - b[1] + 2)} fill="transparent" rx={0.8}>
+                        <title>{`Move: ${dragLabel(key, false, !!preview.hitRegions.mmM1)}`}</title>
                       </rect>
                     ))}
                   </svg>
@@ -354,7 +498,7 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
                 <p className="p-6 text-muted">Preparing the preview…</p>
               )}
               {!!preview?.outside.length && <Alert tone="warn">Writing extends beyond its available space: {preview.outside.join(", ")}. Adjust before printing.</Alert>}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              {advanced && <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
                 <span className="flex items-center gap-1">
                   <span className="text-xs font-medium">Move all</span>
                   {([["←", -0.5, 0], ["↑", 0, -0.5], ["↓", 0, 0.5], ["→", 0.5, 0]] as const).map(([label, dx, dy]) => (
@@ -368,7 +512,7 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
                     <Button variant="secondary" className="min-h-7 px-2" aria-label={`Move ${label} right`} onClick={() => setCal((old) => moveFields(old, keys, 0.5))}>→</Button>
                   </span>
                 ))}
-              </div>
+              </div>}
             </Card>
             <Card className="space-y-2">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -385,42 +529,45 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
                     {printers.map((p) => <option key={p.name}>{p.name}</option>)}
                   </Select>
                 </Field>
-                <Field label="Paper tray">
+                {advanced && <Field label="Paper tray">
                   <Select aria-label="Paper tray" value={cal.tray} onChange={(e) => setCalibration("tray", e.target.value)}>
                     {!trays.some((t) => t.name === cal.tray) && <option>{cal.tray}</option>}
                     {trays.map((t) => <option key={t.name}>{t.name}</option>)}
                   </Select>
-                </Field>
-                <Field label="Orientation">
+                </Field>}
+                {advanced && <Field label="Orientation">
                   <Select value={cal.orientation} onChange={(e) => setCalibration("orientation", e.target.value as Calibration["orientation"])}>
                     <option>Landscape</option>
                     <option>Portrait</option>
                   </Select>
-                </Field>
-                <Field label="Feed mode">
+                </Field>}
+                {advanced && <Field label="Feed mode">
                   <Select aria-label="Feed mode" value={cal.feed} onChange={(e) => setCalibration("feed", e.target.value as Calibration["feed"])}>
                     <option value="cheque_only">Cropped Cheque Leaf (PDF)</option>
                     <option value="a4_center_tray">Center Feed (MP Tray)</option>
                     <option value="a4_left_center_tray">Left-Center Feed Tray</option>
                     <option value="a4_edge_tray">Top/Edge Feed Tray</option>
                   </Select>
-                </Field>
+                </Field>}
               </div>
               {printersNote && <p className="text-xs text-muted">{printersNote} <button className="underline" onClick={() => void loadPrinters()}>Refresh printers</button></p>}
               <div className="flex flex-wrap items-center gap-2 border-t border-border pt-2">
                 <Tick label="Add cheque to list" value={addToList} onChange={setAddToList} />
                 <span className="flex-1" />
-                <Button disabled={outputDisabled} onClick={() => void output("direct")}>Print directly</Button>
-                <Button variant="secondary" disabled={outputDisabled} onClick={() => void output("dialog")}>Windows Print dialog</Button>
-                <Button variant="secondary" disabled={outputDisabled} onClick={() => void output("pdf")}>Cheque PDF</Button>
+                <Button variant="secondary" disabled={!request || busy} title="Prints a sample with the cheque outline on plain paper" onClick={() => void testPrint()}>Test print</Button>
+                {advanced && <Button variant="secondary" disabled={outputDisabled} onClick={() => void output("dialog")}>Windows Print dialog</Button>}
+                {advanced && <Button variant="secondary" disabled={outputDisabled} onClick={() => void output("pdf")}>Cheque PDF</Button>}
+                <Button disabled={outputDisabled} title="Ctrl+P" onClick={() => void output("direct")}>Print cheque</Button>
               </div>
+              {warnings.map((w) => <Alert key={w} tone="warn">{w}</Alert>)}
               <p className="text-xs text-muted">
-                {addToList ? "After the cheque is printed it is added to the Cheque List as Pending." : "Print only: this cheque is not added to the Cheque List."}
+                {addToList ? "After the cheque is printed it is added to the Cheque List as Pending, and the form is ready for the next cheque." : "Print only: this cheque is not added to the Cheque List."} Shortcuts: Ctrl+P print, Ctrl+N new cheque.
               </p>
+              <Tick label="Show advanced options (wording, tray, calibration, PDF)" value={advanced} onChange={(v) => { setAdvanced(v); setPref("cw.advanced", v ? "1" : "0"); }} />
             </Card>
           </div>
         </div>
-        <details className="rounded-xl border border-border bg-surface">
+        {advanced && <details className="rounded-xl border border-border bg-surface">
           <summary className="cursor-pointer px-3 py-2 text-sm font-semibold">Calibration and text options</summary>
           <div className="space-y-3 border-t border-border p-3">
             <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-9">
@@ -465,10 +612,25 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
               <Button variant="secondary" disabled={!layout?.background_image} onClick={() => void removePhoto()}>Remove photo</Button>
             </div>
           </div>
-        </details>
+        </details>}
       </fieldset>
     </div>
   );
 }
 
 export type { EnginePrinter };
+
+/** Number of single-letter changes between two names (used to offer "Did you mean ...?" for a payee). */
+function editDistance(a: string, b: string): number {
+  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0];
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return row[b.length];
+}

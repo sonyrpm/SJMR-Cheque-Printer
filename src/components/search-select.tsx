@@ -132,7 +132,15 @@ export function SearchSelect<T extends { id: string }>({
     node?.scrollIntoView({ block: "nearest" });
   }, [hi, open]);
 
-  const shown = open ? q : displayValue || (selected ? getLabel(selected) : q);
+  // The form emptied the box from outside (next cheque): forget the old typing and close the list.
+  useEffect(() => {
+    if (preserveTextUntilPick && displayValue === "") {
+      setQ("");
+      setTyped(false);
+      setOpen(false);
+    }
+  }, [displayValue, preserveTextUntilPick]);
+  const shown = open ? q : preserveTextUntilPick && displayValue !== undefined ? displayValue : displayValue || (selected ? getLabel(selected) : q);
 
   const pick = (item: T, fromEnter = false) => {
     onChange(item.id, item);

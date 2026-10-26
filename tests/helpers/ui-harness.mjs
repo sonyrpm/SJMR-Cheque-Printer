@@ -97,6 +97,7 @@ export async function startHarness({ printerOutputs = [], printers = '[{"name":"
       now: () => new Date(startMs),
       openDb: async (file, options) => handle(await call("openDb", file, options)),
       runHelper: (x) => call("runHelper", x),
+      loadFont: async () => new Uint8Array(await (await fetch("fonts/NotoNaskhArabic-Regular.ttf")).arrayBuffer()),
       savePdf: (b, n) => call("savePdf", b, n),
       pickOpen: (t, f) => call("pickOpen", t, f),
       pickSave: (t, n, f) => call("pickSave", t, n, f),

@@ -152,8 +152,17 @@ export function moveFields(cal: Calibration, keys: string[], dx: number, dy = 0)
   }
   return { ...cal, offsets };
 }
+// Where the engine draws these when a layout does not list them. A field can only be moved if it exists,
+// so the first time one is dragged it is added here with its usual place.
+const DEFAULT_FIELDS: Record<string, (fields: Record<string, { left_mm: number; top_mm: number; width_mm?: number; height_mm?: number }>) => { left_mm: number; top_mm: number; width_mm?: number; height_mm?: number }> = {
+  lnPayee1: () => ({ left_mm: -0.5, top_mm: 18.9, width_mm: 28, height_mm: -20 }),
+  lnPayee2: () => ({ left_mm: -0.3, top_mm: 26.1, width_mm: 39, height_mm: -28 }),
+  mmNoBearer: (f) => ({ left_mm: 8, top_mm: Number(f.mmPayee?.top_mm ?? 26.5) + 1.2 }),
+};
 export function effectiveLayout(layout: NativeLayout, cal: Calibration) {
   const result = structuredClone(layout);
+  for (const key of Object.keys(cal.offsets))
+    if (!Object.hasOwn(result.fields, key) && DEFAULT_FIELDS[key]) (result.fields as Record<string, unknown>)[key] = DEFAULT_FIELDS[key](result.fields as never);
   for (const [key, delta] of Object.entries(cal.offsets)) {
     if (Object.hasOwn(result.fields, key)) {
       result.fields[key].left_mm += delta.left_mm;
@@ -168,8 +177,10 @@ export function engineRequest(
   values: WriterValues,
   bank: WriterBank,
   currency: string,
+  options: { outline?: boolean } = {},
 ) {
   return {
+    ...(options.outline ? { outline: true } : {}),
     template: effectiveLayout(layout, cal),
     feedMode: cal.feed,
     account: {
@@ -290,6 +301,23 @@ const FIELD_LABELS: Record<string, string> = {
   mmAmountText2: "Amount in words, line 2",
   mmBank: "Bank name",
 };
+// What one drag moves. A date written in boxes has a day, a month and a year part; the crossing is
+// its two lines with the "A/C PAYEE ONLY" stamp. Hold Shift to move a single box.
+const DRAG_GROUPS: Record<string, string[]> = {
+  mmD1: ["mmD1", "mmD2"], mmD2: ["mmD1", "mmD2"],
+  mmM1: ["mmM1", "mmM2"], mmM2: ["mmM1", "mmM2"],
+  mmY1: ["mmY1", "mmY2", "mmY3", "mmY4"], mmY2: ["mmY1", "mmY2", "mmY3", "mmY4"], mmY3: ["mmY1", "mmY2", "mmY3", "mmY4"], mmY4: ["mmY1", "mmY2", "mmY3", "mmY4"],
+  crossing: ["lnPayee1", "lnPayee2"],
+};
+export function dragKeys(region: string, single = false): string[] {
+  return single ? (region === "crossing" ? ["lnPayee1", "lnPayee2"] : [region]) : DRAG_GROUPS[region] || [region];
+}
+export function dragLabel(region: string, single = false, boxDate = false): string {
+  if (region === "crossing") return "Crossing lines and A/C Payee stamp";
+  if (!boxDate && (region === "mmD1" || region === "mmDate")) return "Date";
+  if (!single && /^mm[DMY]\d$/.test(region)) return { D: "Date: day", M: "Date: month", Y: "Date: year" }[region[2] as "D" | "M" | "Y"];
+  return chequeFieldLabel(region);
+}
 export function chequeFieldLabel(key: string): string {
   return FIELD_LABELS[key] || key;
 }

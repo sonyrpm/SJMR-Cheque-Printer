@@ -6,7 +6,7 @@ const WIDTH_PX = 1600;
 export type SceneItem =
   | { k: "line"; x1: number; y1: number; x2: number; y2: number; w: number; c: number[] }
   | { k: "rect"; x: number; y: number; w: number; h: number; fill: number[] | null; stroke: number[] | null; lw: number }
-  | { k: "text"; x: number; y: number; text: string; font: string; size: number; rot: number; c: number[] };
+  | { k: "text"; x: number; y: number; text: string; font: string; size: number; rot: number; c: number[]; rtl?: boolean; bw?: number };
 export type PreviewScene = {
   widthMm: number;
   heightMm: number;
@@ -37,12 +37,15 @@ function paint(ctx: CanvasRenderingContext2D, items: SceneItem[], scale: number)
       }
     } else {
       const px = (item.size / MM_TO_PT) * scale;
-      const face = item.font === "F3" ? "'Courier New', monospace" : "Helvetica, Arial, sans-serif";
+      const face = item.font === "F3" ? "'Courier New', monospace" : item.rtl ? "CWNaskh, Helvetica, Arial, sans-serif" : "Helvetica, Arial, sans-serif";
       ctx.font = `${item.font === "F1" ? "" : "bold "}${px}px ${face}`;
       ctx.fillStyle = rgb(item.c);
       ctx.textBaseline = "alphabetic";
-      const x = item.x * scale,
+      const x = (item.rtl && item.bw ? item.x + item.bw : item.x) * scale,
         y = (item.y + item.size * 0.31) * scale;
+      // Arabic is drawn right to left and sits at the right end of its field.
+      ctx.direction = item.rtl ? "rtl" : "ltr";
+      ctx.textAlign = item.rtl && item.bw ? "right" : "left";
       if (Math.abs(item.rot) < 0.01) ctx.fillText(item.text, x, y);
       else {
         ctx.save();
@@ -53,6 +56,21 @@ function paint(ctx: CanvasRenderingContext2D, items: SceneItem[], scale: number)
       }
     }
   }
+}
+
+let arabicFont: Promise<unknown> | null = null;
+/** Loads the Arabic font once for the canvas (the same Noto Naskh Arabic file the PDF embeds). */
+export function loadArabicFont() {
+  arabicFont ??= (async () => {
+    try {
+      const face = new FontFace("CWNaskh", "url(fonts/NotoNaskhArabic-Regular.ttf)");
+      await face.load();
+      document.fonts.add(face);
+    } catch {
+      // The preview then uses a system Arabic font.
+    }
+  })();
+  return arabicFont;
 }
 
 function loadImage(base64: string): Promise<HTMLImageElement> {
@@ -70,6 +88,7 @@ export async function drawChequePreview(
   photo?: { format: "png"; data: string } | null,
 ): Promise<string> {
   const scale = WIDTH_PX / scene.widthMm;
+  if (scene.printed.some((i) => i.k === "text" && i.rtl)) await loadArabicFont();
   const canvas = document.createElement("canvas");
   canvas.width = WIDTH_PX;
   canvas.height = Math.round(scene.heightMm * scale);

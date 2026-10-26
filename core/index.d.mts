@@ -20,11 +20,13 @@ export type Host = {
   applyAlertSettings?(settings: unknown, tip: string): Promise<void> | void;
   setTip?(text: string): Promise<void> | void;
   onNavigate(callback: (target: string) => void): () => void;
+  loadFont?(): Promise<Uint8Array>;
   now?(): Date;
 };
 export function createCore(host: Host): Promise<{
   invoke(name: string, ...args: unknown[]): Promise<unknown>;
   alertRound(): Promise<void>;
+  autoBackup(): Promise<void>;
   startAlerts(): void;
   stop(): void;
 }>;
