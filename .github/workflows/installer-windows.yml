@@ -1,0 +1,86 @@
+name: Windows Installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    name: Test, build, install, start and uninstall the Windows installer
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+      - name: Install dependencies
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx playwright install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Type check, build the window and run the tests
+        run: |
+          npm run typecheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build the installer
+        run: |
+          npm run dist:installer
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force release | Out-Null
+          $made = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          if (-not $made) { throw 'The installer was not built' }
+          Copy-Item $made.FullName "release/SJMR_Cheque_Writer_Setup_$version.exe"
+          Get-ChildItem release -Filter *.exe | ForEach-Object { Write-Host $_.Name ([math]::Round($_.Length / 1MB, 1)) 'MB' }
+      - name: Install silently, start the installed program, then uninstall (data is kept)
+        run: |
+          $setup = Get-ChildItem release -Filter 'SJMR_Cheque_Writer_Setup_*.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'Setup exe not found' }
+          $target = Join-Path $env:RUNNER_TEMP 'cw-installed'
+          $install = Start-Process -FilePath $setup.FullName -ArgumentList '/S', "/D=$target" -PassThru -Wait
+          if ($install.ExitCode -ne 0) { throw "Setup failed (exit $($install.ExitCode))" }
+          Get-ChildItem $target | ForEach-Object { Write-Host $_.Name }
+          $exe = Get-ChildItem $target -Filter *.exe | Where-Object { $_.Name -notmatch 'uninstall' } | Select-Object -First 1
+          if (-not $exe) { throw 'The installed program was not found' }
+          if (-not (Test-Path (Join-Path $target 'uninstall.exe'))) { throw 'The uninstaller was not installed' }
+          $data = Join-Path $env:RUNNER_TEMP 'cw-installed-data'
+          $env:CW_SMOKE = '1'
+          $env:CW_DATA_DIR = $data
+          $env:CW_SMOKE_OUT = Join-Path $env:RUNNER_TEMP 'inst-out.txt'
+          $p = Start-Process -FilePath $exe.FullName -PassThru
+          $out = ''
+          for ($i = 0; $i -lt 120; $i++) {
+            Start-Sleep -Seconds 1
+            $out = if (Test-Path $env:CW_SMOKE_OUT) { Get-Content $env:CW_SMOKE_OUT -Raw } else { '' }
+            if ($out -match 'SMOKE_OK|SMOKE_FAILED') { break }
+          }
+          Write-Host $out
+          if ($out -notmatch 'SMOKE_OK' -or $out -notmatch 'Write & Print') { throw 'Installed program check failed' }
+          $uninstall = Start-Process -FilePath (Join-Path $target 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstall failed (exit $($uninstall.ExitCode))" }
+          if (-not (Test-Path (Join-Path $data 'cheque_writer_data.db'))) { throw 'The data file must stay after uninstall' }
+      - uses: actions/upload-artifact@v6
+        with:
+          name: SJMR-Cheque-Writer-Installer
+          path: release/SJMR_Cheque_Writer_Setup_*.exe
+          if-no-files-found: error
+          retention-days: 14

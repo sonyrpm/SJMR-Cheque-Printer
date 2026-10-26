@@ -1,0 +1,3 @@
+# Keep these bytes identical on every platform.
+ChequeDirectPrinter.cs -text
+TemplatePrinter.cs -text

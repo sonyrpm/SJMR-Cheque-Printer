@@ -1,0 +1,93 @@
+name: Portable Windows EXE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    name: Test, build (Tauri) and smoke-test the portable Windows x64 program
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+      - name: Install dependencies
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx playwright install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Type check and build the window
+        run: |
+          npm run typecheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Tests (data, print flow, importer, real window)
+        run: |
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Windows printing helper compiles in Windows PowerShell and lists printers
+        shell: powershell
+        run: |
+          $out = & powershell -NoProfile -STA -ExecutionPolicy Bypass -File shared/direct/cheque-direct.ps1 -Action list
+          if ($LASTEXITCODE -ne 0) { throw "cheque-direct.ps1 failed with code $LASTEXITCODE" }
+          $list = ($out -join "`n") | ConvertFrom-Json
+          Write-Host ("Printers found: " + @($list).Count)
+      - name: Template printer helper compiles in Windows PowerShell and lists printers with paper sizes
+        shell: powershell
+        run: |
+          $out = & powershell -NoProfile -STA -ExecutionPolicy Bypass -File shared/direct/template-print.ps1 -Action list
+          if ($LASTEXITCODE -ne 0) { throw "template-print.ps1 failed with code $LASTEXITCODE" }
+          $list = ($out -join "`n") | ConvertFrom-Json
+          Write-Host ("Printers with paper sizes: " + @($list).Count)
+      - name: Build the portable program (one exe)
+        run: |
+          npm run dist:portable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item src-tauri/target/release/sjmr-cheque-writer.exe "release/SJMR_Cheque_Writer_Portable_$version.exe"
+          Get-ChildItem release -Filter *.exe | ForEach-Object { Write-Host $_.Name ([math]::Round($_.Length / 1MB, 1)) 'MB' }
+      - name: Start the packaged portable program, keep its data beside it, and check the screen text
+        run: |
+          $exe = Get-ChildItem release -Filter 'SJMR_Cheque_Writer_Portable_*.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'Portable exe not found' }
+          $work = Join-Path $env:RUNNER_TEMP 'portable-test'
+          New-Item -ItemType Directory -Force $work | Out-Null
+          Copy-Item $exe.FullName (Join-Path $work 'SJMR_Cheque_Writer.exe')
+          $env:CW_SMOKE = '1'
+          $env:CW_SMOKE_OUT = Join-Path $work 'out.txt'
+          $p = Start-Process -FilePath (Join-Path $work 'SJMR_Cheque_Writer.exe') -PassThru
+          $out = ''
+          for ($i = 0; $i -lt 120; $i++) {
+            Start-Sleep -Seconds 1
+            $out = if (Test-Path (Join-Path $work 'out.txt')) { Get-Content (Join-Path $work 'out.txt') -Raw } else { '' }
+            if ($out -match 'SMOKE_OK|SMOKE_FAILED') { break }
+          }
+          Write-Host $out
+          if ($out -notmatch 'SMOKE_OK') { throw 'The packaged program did not finish its start-up check in 2 minutes' }
+          if ($out -notmatch 'Write & Print') { throw 'The window did not show the Write & Print tab' }
+          if (-not (Test-Path (Join-Path $work 'SJMR Cheque Writer Data\cheque_writer_data.db'))) { throw 'The portable data file was not created beside the program' }
+      - uses: actions/upload-artifact@v6
+        with:
+          name: SJMR-Cheque-Writer-Portable
+          path: release/SJMR_Cheque_Writer_Portable_*.exe
+          if-no-files-found: error
+          retention-days: 14

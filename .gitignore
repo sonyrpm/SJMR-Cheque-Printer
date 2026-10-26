@@ -1,0 +1,13 @@
+node_modules/
+dist/
+release/
+*.log
+cheque_writer.db*
+data/
+__pycache__/
+printed_cheques/
+node_modules
+dist
+release
+src-tauri/target
+src-tauri/gen

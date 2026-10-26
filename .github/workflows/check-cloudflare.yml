@@ -1,0 +1,84 @@
+name: Check Cloudflare secrets
+
+# Read-only check, started by hand. It never uploads or changes anything and never prints a secret.
+# It tells you whether CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are present, well formed, valid,
+# and allowed to reach the R2 bucket sjmr-releases.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check the Cloudflare token, account and R2 bucket
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 5
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Check the secrets
+        run: |
+          fail=0
+          token="${CLOUDFLARE_API_TOKEN:-}"
+          account="${CLOUDFLARE_ACCOUNT_ID:-}"
+
+          echo "== Format"
+          if [ -z "$token" ]; then
+            echo "FAILED: the secret CLOUDFLARE_API_TOKEN is missing or empty."; fail=1
+          else
+            echo "OK: CLOUDFLARE_API_TOKEN is present, ${#token} characters."
+            if [ "${#token}" -lt 30 ]; then
+              echo "FAILED: the token is only ${#token} characters. A real Cloudflare token is about 40. You may have saved its name or the hidden dots. Cloudflare shows the token only once, when it is created: create a new one, copy it with the Copy button and update the secret."; fail=1
+            fi
+            case "$token" in *[[:space:]]*) echo "FAILED: the token contains a space or a new line. Paste the token alone."; fail=1;; esac
+            case "$token" in Bearer*|CLOUDFLARE_API_TOKEN=*|*\"*|*\'*) echo "FAILED: the token has extra text or quotes in it. Paste only the token."; fail=1;; esac
+            half=$(( ${#token} / 2 ))
+            if [ $(( ${#token} % 2 )) -eq 0 ] && [ "${token:0:$half}" = "${token:$half}" ]; then
+              echo "FAILED: the token looks pasted twice (the second half repeats the first). Paste it once."; fail=1
+            fi
+          fi
+          if [ -z "$account" ]; then
+            echo "FAILED: the secret CLOUDFLARE_ACCOUNT_ID is missing or empty."; fail=1
+          elif printf '%s' "$account" | grep -Eq '^[0-9a-f]{32}$'; then
+            echo "OK: CLOUDFLARE_ACCOUNT_ID has the right form (32 characters, 0-9 and a-f)."
+          else
+            echo "FAILED: CLOUDFLARE_ACCOUNT_ID must be exactly 32 characters of 0-9 and a-f (length now ${#account}). It is not the token and not the account name."; fail=1
+          fi
+          [ "$fail" -eq 0 ] || { echo "== Stopped: fix the secrets above and run again."; exit 1; }
+
+          api() { curl -sS -m 30 -H "Authorization: Bearer $token" "https://api.cloudflare.com/client/v4$1"; }
+          errors() { printf '%s' "$1" | jq -r '[.errors[]?.message] | join("; ")' 2>/dev/null; }
+
+          echo "== Token"
+          ok=0
+          for path in "/accounts/$account/tokens/verify" "/user/tokens/verify"; do
+            body="$(api "$path" || true)"
+            if [ "$(printf '%s' "$body" | jq -r '.success // false' 2>/dev/null)" = "true" ]; then
+              status="$(printf '%s' "$body" | jq -r '.result.status // "unknown"')"
+              if [ "$status" = "active" ]; then echo "OK: Cloudflare says the token is active."; ok=1; else echo "FAILED: the token status is '$status'."; fi
+              break
+            fi
+            last="$(errors "$body")"
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "FAILED: Cloudflare did not accept the token (${last:-no answer}). Create a new token and update the secret."
+            fail=1
+          fi
+
+          echo "== Account and R2 bucket sjmr-releases"
+          body="$(api "/accounts/$account/r2/buckets" || true)"
+          if [ "$(printf '%s' "$body" | jq -r '.success // false' 2>/dev/null)" = "true" ]; then
+            if printf '%s' "$body" | jq -e '[.result.buckets[]?.name] | index("sjmr-releases")' >/dev/null 2>&1; then
+              echo "OK: the token reaches this account and the bucket sjmr-releases exists."
+            else
+              echo "FAILED: the account is reachable but the bucket sjmr-releases was not found. Check the account ID belongs to the same Cloudflare account."; fail=1
+            fi
+          else
+            echo "FAILED: could not list the R2 buckets ($(errors "$body")). The token needs permission to edit R2 storage (and the account ID must be the one that owns the bucket)."; fail=1
+          fi
+
+          if [ "$fail" -eq 0 ]; then echo "== All checks passed. The release workflow can publish."; else exit 1; fi

@@ -1,0 +1,8 @@
+{
+  "default-3": { "copies": 3 },
+  "border-2": { "copies": 2, "border": true, "borderMm": 0.35 },
+  "lines-5": { "copies": 5, "width": 95, "height": 45, "gap": 6, "hLines": true, "vLines": true },
+  "offset-4": { "copies": 4, "width": 100, "height": 50, "gap": 8, "offsetX": 0.37, "offsetY": -0.21, "border": true },
+  "landscape-7": { "copies": 7, "pageW": 297, "pageH": 210, "width": 70, "height": 35, "margin": 5, "gap": 7, "hLines": true, "vLines": true, "border": true, "borderMm": 0.1 },
+  "custom-6": { "copies": 6, "pageW": 148.5, "pageH": 210, "width": 60, "height": 30, "margin": 3, "gap": 5.5, "vLines": true }
+}

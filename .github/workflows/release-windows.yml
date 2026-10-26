@@ -1,0 +1,187 @@
+name: Release (build, test and publish to the website)
+
+# Builds the installer and the portable program from one build, tests them on Windows, and (only when
+# the Publish box is ticked and every test passed) replaces the two files on the website download page
+# https://get.sjmrsoft.com/cheque in the private R2 bucket. The files have fixed names: a new publish
+# REPLACES the old ones, no older versions are kept.
+#
+# One-time setup: Settings > Secrets and variables > Actions > add CLOUDFLARE_API_TOKEN and
+# CLOUDFLARE_ACCOUNT_ID (the same values as in the SJMR-ACCOUNTING repository).
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to the website download page (replaces the files in R2). Only after all tests below pass."
+        type: boolean
+        default: false
+      notes:
+        description: "One-line note shown on the download page (optional, 600 characters at most)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test, build and smoke-test the installer and the portable program
+    runs-on: windows-2022
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+      - name: Install dependencies
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx playwright install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Type check, build the window and run the tests
+        run: |
+          npm run typecheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Windows printing helpers compile in Windows PowerShell
+        shell: powershell
+        run: |
+          foreach ($script in 'cheque-direct.ps1', 'template-print.ps1') {
+            $out = & powershell -NoProfile -STA -ExecutionPolicy Bypass -File "shared/direct/$script" -Action list
+            if ($LASTEXITCODE -ne 0) { throw "$script failed with code $LASTEXITCODE" }
+            Write-Host ("$script printers: " + @(($out -join "`n") | ConvertFrom-Json).Count)
+          }
+      - name: Build the installer and the portable program (one build)
+        run: |
+          npm run dist:installer
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force release | Out-Null
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter *-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw 'The installer was not built' }
+          Copy-Item $setup.FullName release/SJMR_Cheque_Writer_Setup.exe
+          Copy-Item src-tauri/target/release/sjmr-cheque-writer.exe release/SJMR_Cheque_Writer_Portable.exe
+          Get-ChildItem release | ForEach-Object { Write-Host $_.Name ([math]::Round($_.Length / 1MB, 1)) 'MB' }
+      - name: Portable program starts and keeps its data beside it
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP 'portable-test'
+          New-Item -ItemType Directory -Force $work | Out-Null
+          Copy-Item release/SJMR_Cheque_Writer_Portable.exe (Join-Path $work 'SJMR_Cheque_Writer.exe')
+          $env:CW_SMOKE = '1'
+          $env:CW_SMOKE_OUT = Join-Path $work 'out.txt'
+          Start-Process -FilePath (Join-Path $work 'SJMR_Cheque_Writer.exe') | Out-Null
+          $out = ''
+          for ($i = 0; $i -lt 120; $i++) {
+            Start-Sleep -Seconds 1
+            $out = if (Test-Path $env:CW_SMOKE_OUT) { Get-Content $env:CW_SMOKE_OUT -Raw } else { '' }
+            if ($out -match 'SMOKE_OK|SMOKE_FAILED') { break }
+          }
+          Write-Host $out
+          if ($out -notmatch 'SMOKE_OK' -or $out -notmatch 'Write & Print') { throw 'The portable program did not start correctly' }
+          if (-not (Test-Path (Join-Path $work 'SJMR Cheque Writer Data\cheque_writer_data.db'))) { throw 'The portable data file was not created beside the program' }
+      - name: Installer installs silently, the installed program starts, uninstall keeps the data
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'cw-installed'
+          $install = Start-Process -FilePath release/SJMR_Cheque_Writer_Setup.exe -ArgumentList '/S', "/D=$target" -PassThru -Wait
+          if ($install.ExitCode -ne 0) { throw "Setup failed (exit $($install.ExitCode))" }
+          $exe = Get-ChildItem $target -Filter *.exe | Where-Object { $_.Name -notmatch 'uninstall' } | Select-Object -First 1
+          if (-not $exe) { throw 'The installed program was not found' }
+          $data = Join-Path $env:RUNNER_TEMP 'cw-installed-data'
+          $env:CW_SMOKE = '1'
+          $env:CW_DATA_DIR = $data
+          $env:CW_SMOKE_OUT = Join-Path $env:RUNNER_TEMP 'inst-out.txt'
+          Start-Process -FilePath $exe.FullName | Out-Null
+          $out = ''
+          for ($i = 0; $i -lt 120; $i++) {
+            Start-Sleep -Seconds 1
+            $out = if (Test-Path $env:CW_SMOKE_OUT) { Get-Content $env:CW_SMOKE_OUT -Raw } else { '' }
+            if ($out -match 'SMOKE_OK|SMOKE_FAILED') { break }
+          }
+          Write-Host $out
+          if ($out -notmatch 'SMOKE_OK' -or $out -notmatch 'Write & Print') { throw 'Installed program check failed' }
+          $uninstall = Start-Process -FilePath (Join-Path $target 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstall failed (exit $($uninstall.ExitCode))" }
+          if (-not (Test-Path (Join-Path $data 'cheque_writer_data.db'))) { throw 'The data file must stay after uninstall' }
+      - name: Write the release record (sizes, SHA-256, version, notes)
+        env:
+          NOTES: ${{ inputs.notes }}
+        run: |
+          node scripts/make-release.mjs release "$env:NOTES"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Content release/release.json
+      - uses: actions/upload-artifact@v6
+        with:
+          name: cheque-writer-release
+          path: |
+            release/SJMR_Cheque_Writer_Setup.exe
+            release/SJMR_Cheque_Writer_Portable.exe
+            release/release.json
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Replace the files on the website download page
+    if: ${{ inputs.publish && github.ref == 'refs/heads/main' }}
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 15
+    concurrency:
+      group: sjmr-r2-publish-cheque-writer
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: The Cloudflare secrets are present
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID under Settings, Secrets and variables, Actions. Then run again."
+            exit 1
+          fi
+      - uses: actions/download-artifact@v8
+        with:
+          name: cheque-writer-release
+          path: release
+      - name: Check the files against the release record
+        run: |
+          cd release
+          sha256sum -c SHA256SUMS.txt
+          node -e '
+            const fs = require("fs");
+            const r = JSON.parse(fs.readFileSync("release.json", "utf8"));
+            for (const f of [r.setup, r.portable]) {
+              if (fs.statSync(f.file).size !== f.size) throw new Error(f.file + ": size does not match release.json");
+            }
+            console.log("Publishing version", r.version, "built", r.built);
+          '
+      - name: Install wrangler
+        run: npm install --prefix "$RUNNER_TEMP/wr" --no-save --no-audit --no-fund "wrangler@^4.147.0"
+      - name: Upload the two files, then release.json (same names every time, so the old files are replaced)
+        run: |
+          W="$RUNNER_TEMP/wr/node_modules/.bin/wrangler"
+          for f in SJMR_Cheque_Writer_Setup.exe SJMR_Cheque_Writer_Portable.exe; do
+            "$W" r2 object put "sjmr-releases/cheque-writer/$f" --file "release/$f" --content-type application/octet-stream --cache-control no-store --remote
+          done
+          "$W" r2 object put "sjmr-releases/cheque-writer/release.json" --file release/release.json --content-type application/json --cache-control no-store --remote
+      - name: Check what is published
+        run: |
+          W="$RUNNER_TEMP/wr/node_modules/.bin/wrangler"
+          "$W" r2 object get "sjmr-releases/cheque-writer/release.json" --file "$RUNNER_TEMP/published.json" --remote
+          cmp "$RUNNER_TEMP/published.json" release/release.json
+          echo "Published. Download page: https://get.sjmrsoft.com/cheque"
