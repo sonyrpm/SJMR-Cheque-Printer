@@ -176,3 +176,28 @@ test("chequeFromPrint refuses empty or bad input", async () => {
   assert.throws(() => rec(a, { date: "2026-02-30" }), /YYYY-MM-DD/);
   assert.equal(rec(a, { blankDate: true }).chequeDate, null);
 });
+
+test("one save stores a bank layout and the account's calibration together; wrong requests change nothing", async () => {
+  const { store, account } = await fresh();
+  const config = await store.config();
+  const adcb = structuredClone(config.layouts.ADCB);
+  const crossingDefaults = { crossed: false, crossing: 2, noBearer: true };
+  const first = await store.saveDesign({ kind: "all", revision: config.revision, bankId: account.id, isNew: false, layout: adcb, calibration: { width: 200, crossingDefaults } });
+  assert.equal(first.revision, config.revision + 1);
+  assert.deepEqual(first.banks[account.id].calibration.ADCB.crossingDefaults, crossingDefaults);
+  const made = await store.saveDesign({ kind: "all", revision: first.revision, bankId: account.id, isNew: true, layout: { ...adcb, id: "NEWONE", display_name: "New one" }, calibration: { width: 190 } });
+  assert.ok(made.layouts.NEWONE);
+  assert.equal(made.banks[account.id].layoutId, "NEWONE");
+  assert.equal(made.banks[account.id].calibration.ADCB.width, 200, "the other layout's calibration is kept");
+  const bad = [
+    ["a new layout with an id that exists", { isNew: true, layout: adcb }],
+    ["an edit of a layout that does not exist", { isNew: false, layout: { ...adcb, id: "GONE" } }],
+    ["a reserved id", { isNew: true, layout: { ...adcb, id: "constructor" } }],
+    ["an old revision", { revision: 0, isNew: false, layout: adcb }],
+    ["another bank account", { bankId: "nobody", isNew: false, layout: adcb }],
+    ["a wrong crossing choice", { isNew: false, layout: adcb, calibration: { width: 200, crossingDefaults: { crossed: true, crossing: 9, noBearer: false } } }],
+  ];
+  for (const [why, over] of bad)
+    await assert.rejects(async () => await store.saveDesign({ kind: "all", revision: made.revision, bankId: account.id, calibration: { width: 200 }, ...over }), Error, why);
+  assert.equal((await store.config()).revision, made.revision, "nothing was changed by the refused saves");
+});

@@ -37,6 +37,7 @@ export type TemplateSaved = {
 export type EngineRequest = Record<string, unknown>;
 export type DesignInput =
   | { kind: "calibration"; revision: number; bankId: string; layoutId: string; calibration: Calibration }
+  | { kind: "all"; revision: number; bankId: string; isNew: boolean; layout: NativeLayout; calibration: Calibration }
   | { kind: "layouts"; revision: number; layouts: Record<string, NativeLayout>; replace: boolean }
   | { kind: "delete"; revision: number; id: string };
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import { Alert, Button, Card, Field, Input, Select, Textarea } from "@/components/ui";
+import { Alert, Button, Card, Field, FormDialog, Input, Select, Textarea } from "@/components/ui";
+import { Group } from "@/components/groups";
 import { SearchSelect } from "@/components/search-select";
 import { Tick } from "@/components/bits";
 import { api, errorText } from "@/lib/api";
@@ -8,6 +9,7 @@ import { drawChequePreview, photoToPng } from "@/lib/cheque-preview-draw";
 import { getPref, setPref } from "@/lib/prefs";
 import { suggestArabic } from "@/lib/arabic-names";
 import {
+  crossingStart,
   defaultCalibration,
   dragKeys,
   dragLabel,
@@ -23,6 +25,20 @@ import {
   type NativeLayout,
   type WriterValues,
 } from "@/lib/cheque-writer-model";
+
+/** A short fingerprint of what the layout settings hold, without hashing the whole photo each time. */
+function settingsSnap(layout: NativeLayout | null, cal: Calibration, layoutId: string) {
+  const image = layout?.background_image;
+  return JSON.stringify({
+    layoutId,
+    // An unset crossing start reads as the standard start.
+    cal: { ...cal, crossingDefaults: crossingStart(cal) },
+    layout: layout && {
+      ...layout,
+      background_image: image ? { format: image.format, n: image.data.length, a: image.data.slice(0, 48), z: image.data.slice(-48) } : undefined,
+    },
+  });
+}
 
 const LAST_ACCOUNT = "cw.lastAccount";
 const remember = (key: string, value: string) => {
@@ -55,12 +71,16 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
     date: today,
     blankDate: false,
     crossed: true,
-    crossing: 1,
+    crossing: 4,
     noBearer: false,
     payeeCaps: true,
     style: getPref("cw.lang", "en") === "ar" ? "AR" : "spelled_fils",
     wording: null,
   });
+  // The layout settings are locked every time the screen opens. Unlock to change them; one Save stores them all.
+  const [locked, setLocked] = useState(true);
+  const [base, setBase] = useState("");
+  const [pending, setPending] = useState<{ run: () => void } | null>(null);
   const [addToList, setAddToList] = useState(true);
   const [followGuides, setFollowGuides] = useState(true);
   const [preview, setPreview] = useState<EnginePreview | null>(null);
@@ -89,19 +109,55 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
     if (!picked) return;
     const saved = config.banks[id];
     const layoutKey = saved?.layoutId && config.layouts[saved.layoutId] ? saved.layoutId : config.layouts.ADCB ? "ADCB" : Object.keys(config.layouts)[0];
+    const nextCal = structuredClone(saved?.calibration[layoutKey] || defaultCalibration(layoutKey));
     setAccountId(id);
     remember(LAST_ACCOUNT, id);
     setLayoutId(layoutKey);
     setLayout(structuredClone(config.layouts[layoutKey]));
-    setCal(structuredClone(saved?.calibration[layoutKey] || defaultCalibration(layoutKey)));
+    setCal(nextCal);
+    setValues((old) => ({ ...old, ...crossingStart(nextCal) }));
+    setLocked(true);
+    setBase(settingsSnap(config.layouts[layoutKey], nextCal, layoutKey));
     api.nextChequeNo(id).then((next) => next && setValue("number", next)).catch(() => undefined);
   }
   function selectLayout(id: string) {
     if (!config.layouts[id]) return;
+    const nextCal = structuredClone((accountId && config.banks[accountId]?.calibration[id]) || defaultCalibration(id));
     setLayoutId(id);
     setLayout(structuredClone(config.layouts[id]));
-    setCal(structuredClone((accountId && config.banks[accountId]?.calibration[id]) || defaultCalibration(id)));
+    setCal(nextCal);
+    setValues((old) => ({ ...old, ...crossingStart(nextCal) }));
+    setBase(settingsSnap(config.layouts[id], nextCal, id));
   }
+  // The calibration as it would be saved now: the crossing choices on screen become the bank's start choices.
+  const liveCal: Calibration = { ...cal, crossingDefaults: { crossed: values.crossed, crossing: values.crossing as 1 | 2 | 3 | 4, noBearer: values.noBearer } };
+  const dirty = !locked && settingsSnap(layout, liveCal, layoutId) !== base;
+  // A change of bank account or layout while there are unsaved settings asks first.
+  function guard(action: () => void) {
+    if (dirty) setPending({ run: action });
+    else action();
+  }
+  function unlockLayout() {
+    setBase(settingsSnap(layout, liveCal, layoutId));
+    setLocked(false);
+    setNotice("");
+  }
+  function lockLayout() {
+    guard(() => {
+      if (config.layouts[layoutId]) selectLayout(layoutId);
+      else if (accountId) selectAccount(accountId);
+      setLocked(true);
+    });
+  }
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
   // First account: the one used last, else the first active one. Also when the accounts change.
   useEffect(() => {
     if (accountId && activeAccounts.some((a) => a.id === accountId)) return;
@@ -231,37 +287,39 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
     setPref("cw.lang", next);
     setValues((old) => ({ ...old, style: next === "ar" ? "AR" : "spelled_fils", wording: null }));
   }, []);
-  async function saveCalibration() {
-    if (!account) return;
+  // One save for everything of this bank account: layout, calibration, text, printer, tray, photo and crossing start.
+  async function saveAll() {
+    if (!account || !layout) return;
     await act(async () => {
-      setConfig(await api.saveDesign({ kind: "calibration", revision: config.revision, bankId: account.id, layoutId, calibration: cal }));
-      setNotice("Calibration saved for this bank account and layout.");
+      const next = await api.saveDesign({ kind: "all", revision: config.revision, bankId: account.id, isNew: false, layout, calibration: liveCal });
+      const stored = next.layouts[layout.id] || layout;
+      const savedCal = next.banks[account.id]?.calibration[layout.id] || liveCal;
+      setConfig(next);
+      setLayout(structuredClone(stored));
+      setCal(structuredClone(savedCal));
+      setBase(settingsSnap(stored, savedCal, layout.id));
+      setLocked(true);
+      setNotice(`All layout settings saved for ${account.name} (${stored.display_name || stored.id}): measurements, photo, offsets, text, printer, tray and crossing start are stored together. The layout is locked again.`);
     });
-  }
-  async function persistLayout(next: NativeLayout) {
-    setConfig(await api.saveDesign({ kind: "layouts", revision: config.revision, layouts: { [next.id]: next }, replace: true }));
-    setLayout(next);
   }
   async function photo(file?: File) {
     if (!file || !layout) return;
     await act(async () => {
       if (file.size > 10 * 1024 * 1024 || !["image/png", "image/jpeg"].includes(file.type)) throw new Error("Choose a PNG/JPEG under 10 MB.");
       const result = await api.image(await photoToPng(file));
-      await persistLayout({ ...layout, background_image: result.background });
-      setNotice("Alignment photo saved with this layout. It is never printed.");
+      setLayout({ ...layout, background_image: result.background });
+      setNotice("Alignment photo loaded. Press Save all layout settings to keep it. It is never printed.");
     });
   }
-  async function removePhoto() {
+  function removePhoto() {
     if (!layout) return;
-    await act(async () => {
-      const copy = { ...layout };
-      delete copy.background_image;
-      await persistLayout(copy);
-      setNotice("Alignment photo removed.");
-    });
+    const copy = { ...layout };
+    delete copy.background_image;
+    setLayout(copy);
+    setNotice("Alignment photo removed. Press Save all layout settings to keep this.");
   }
   function pointerDown(e: PointerEvent<SVGSVGElement>) {
-    if (!preview || busy || previewBusy) return;
+    if (!preview || busy || previewBusy || locked) return;
     const box = e.currentTarget.getBoundingClientRect();
     const field = (e.target as SVGElement).getAttribute("data-field");
     // One field per drag: the one under the pointer. Empty space moves all the writing.
@@ -273,6 +331,7 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
   function pointerMove(e: PointerEvent<SVGSVGElement>) {
     const start = drag.current;
     if (!start) {
+      if (locked) return;
       const field = (e.target as SVGElement).getAttribute?.("data-field") || "";
       setHover((old) => (old?.key === field && old.single === e.shiftKey ? old : field ? { key: field, single: e.shiftKey } : null));
       return;
@@ -343,6 +402,30 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
       <Input aria-label={label} maxLength={80} value={cal.text[key]} onChange={(e) => setCalibration("text", { ...cal.text, [key]: e.target.value })} />
     </Field>
   );
+  const layoutBar = (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-sunken px-3 py-2" role="group" aria-label="Layout settings">
+      <span className="mr-auto text-sm">
+        <span className="font-semibold">{locked ? "Layout locked" : dirty ? "Layout unlocked · unsaved changes" : "Layout unlocked"}</span>
+        <span className="block text-xs text-muted">
+          {locked ? "Offsets, text, printer, photo and the writing position are protected." : "Change what you need, then press Save all layout settings."}
+        </span>
+      </span>
+      {locked ? (
+        <Button variant="secondary" disabled={!layout || busy} title="Allow changes to the layout settings" onClick={unlockLayout}>
+          Unlock layout
+        </Button>
+      ) : (
+        <>
+          <Button disabled={!layout || !dirty || busy} onClick={() => void saveAll()}>
+            Save all layout settings
+          </Button>
+          <Button variant="secondary" disabled={busy} onClick={lockLayout}>
+            {dirty ? "Discard and lock" : "Lock layout"}
+          </Button>
+        </>
+      )}
+    </div>
+  );
   return (
     <div className="space-y-3">
       {error && <Alert tone="danger">{error}</Alert>}
@@ -353,11 +436,13 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
             <h2 className="text-sm font-semibold">Cheque details</h2>
             <div className="grid grid-cols-2 gap-2">
               <Field label="Bank account">
-                <SearchSelect items={activeAccounts} value={accountId} getLabel={(r) => r.name} getHint={(r) => r.bankNo} onChange={(id) => selectAccount(id)} />
+                <SearchSelect items={activeAccounts} value={accountId} getLabel={(r) => r.name} getHint={(r) => r.bankNo} onChange={(id) => guard(() => selectAccount(id))} />
               </Field>
-              <Field label="Bank layout">
-                <SearchSelect items={Object.values(config.layouts)} value={layoutId} getLabel={(r) => r.display_name || r.id} getCode={(r) => r.id} onChange={(id) => selectLayout(id)} />
-              </Field>
+              <fieldset disabled={locked} className="m-0 min-w-0 border-0 p-0">
+                <Field label={locked ? "Bank layout (locked)" : "Bank layout"}>
+                  <SearchSelect items={Object.values(config.layouts)} value={layoutId} getLabel={(r) => r.display_name || r.id} getCode={(r) => r.id} onChange={(id) => guard(() => selectLayout(id))} />
+                </Field>
+              </fieldset>
             </div>
             <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
               <Field label="Cheque number">
@@ -450,6 +535,11 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
               <Tick label="Crossed cheque" value={values.crossed} onChange={(v) => setValue("crossed", v)} />
               {advanced && <Tick label="Strike bearer" value={values.noBearer} onChange={(v) => setValue("noBearer", v)} />}
             </div>
+            <p className="text-[11px] text-muted">
+              {locked
+                ? "Crossing choices count for this cheque only. To keep them as the start choices of this bank account: Unlock layout, set them, then Save all layout settings."
+                : "Save all layout settings keeps these crossing choices as the start choices of this bank account."}
+            </p>
             {values.crossed && (
               <Field label="Security crossing">
                 <Select value={values.crossing} onChange={(e) => setValue("crossing", Number(e.target.value))}>
@@ -462,46 +552,66 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
             )}
           </Card>
           <div className="min-w-0 space-y-3">
-            <Card className="space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-sm font-semibold">Cheque preview</h2>
-                <span className="text-xs text-muted" aria-live="polite">
-                  {previewBusy
-                    ? "Updating…"
-                    : dragging
-                      ? `Moving: ${dragging}`
-                      : hover
-                        ? `Drag to move: ${dragLabel(hover.key, hover.single, !!preview?.hitRegions.mmM1)}${/^mm[DMY]\d$/.test(hover.key) && !hover.single ? " (hold Shift for one box)" : ""}`
-                        : "Drag any writing to move just that field. Drag an empty place to move all the writing."}
-                </span>
-              </div>
-              {previewError && <Alert tone="danger">{previewError}</Alert>}
-              {preview ? (
-                <div className="relative w-full overflow-hidden rounded-md border border-border bg-sunken" style={{ aspectRatio: `${preview.widthMm}/${preview.heightMm}` }}>
-                  <img alt="Cheque PDF preview" dir="ltr" className="block h-full w-full" draggable={false} src={`data:image/png;base64,${preview.png}`} />
-                  <svg
-                    role="img"
-                    aria-label="Drag cheque writing or individual fields"
-                    className="absolute inset-0 h-full w-full"
-                    viewBox={`0 0 ${preview.widthMm} ${preview.heightMm}`}
-                    style={{ touchAction: "none", cursor: "move" }}
-                    onPointerDown={pointerDown}
-                    onPointerMove={pointerMove}
-                    onPointerUp={pointerEnd}
-                    onPointerCancel={pointerEnd}
-                    onPointerLeave={() => !drag.current && setHover(null)}
-                  >
-                    {Object.entries(preview.hitRegions).map(([key, b]) => (
-                      <rect key={key} className="cw-hit" data-field={key} x={b[0] - 1} y={b[1] - 1} width={Math.max(2, b[2] - b[0] + 2)} height={Math.max(2, b[3] - b[1] + 2)} fill="transparent" rx={0.8}>
-                        <title>{`Move: ${dragLabel(key, false, !!preview.hitRegions.mmM1)}`}</title>
-                      </rect>
-                    ))}
-                  </svg>
+            <div className="min-w-0 lg:sticky lg:top-2 lg:z-10">
+              <Card className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold">Cheque preview</h2>
+                  <span className="text-xs text-muted" aria-live="polite">
+                    {previewBusy
+                      ? "Updating…"
+                      : locked
+                        ? "Layout locked. Press Unlock layout to move the writing."
+                        : dragging
+                          ? `Moving: ${dragging}`
+                          : hover
+                            ? `Drag to move: ${dragLabel(hover.key, hover.single, !!preview?.hitRegions.mmM1)}${/^mm[DMY]\d$/.test(hover.key) && !hover.single ? " (hold Shift for one box)" : ""}`
+                            : "Drag any writing to move just that field. Drag an empty place to move all the writing."}
+                  </span>
                 </div>
-              ) : (
-                <p className="p-6 text-muted">Preparing the preview…</p>
-              )}
-              {!!preview?.outside.length && <Alert tone="warn">Writing extends beyond its available space: {preview.outside.join(", ")}. Adjust before printing.</Alert>}
+                {previewError && <Alert tone="danger">{previewError}</Alert>}
+                {preview ? (
+                  <div className="relative mx-auto w-full overflow-hidden rounded-md border border-border bg-sunken" style={{ aspectRatio: `${preview.widthMm}/${preview.heightMm}`, maxWidth: `max(18rem, calc((100vh - 21rem) * ${preview.widthMm / preview.heightMm}))` }}>
+                    <img alt="Cheque PDF preview" dir="ltr" className="block h-full w-full" draggable={false} src={`data:image/png;base64,${preview.png}`} />
+                    <svg
+                      role="img"
+                      aria-label="Drag cheque writing or individual fields"
+                      className="absolute inset-0 h-full w-full"
+                      viewBox={`0 0 ${preview.widthMm} ${preview.heightMm}`}
+                      style={{ touchAction: "none", cursor: locked ? "default" : "move" }}
+                      onPointerDown={pointerDown}
+                      onPointerMove={pointerMove}
+                      onPointerUp={pointerEnd}
+                      onPointerCancel={pointerEnd}
+                      onPointerLeave={() => !drag.current && setHover(null)}
+                    >
+                      {(locked ? [] : Object.entries(preview.hitRegions)).map(([key, b]) => (
+                        <rect key={key} className="cw-hit" data-field={key} x={b[0] - 1} y={b[1] - 1} width={Math.max(2, b[2] - b[0] + 2)} height={Math.max(2, b[3] - b[1] + 2)} fill="transparent" rx={0.8}>
+                          <title>{`Move: ${dragLabel(key, false, !!preview.hitRegions.mmM1)}`}</title>
+                        </rect>
+                      ))}
+                    </svg>
+                  </div>
+                ) : (
+                  <p className="p-6 text-muted">Preparing the preview…</p>
+                )}
+                {!!preview?.outside.length && <Alert tone="warn">Writing extends beyond its available space: {preview.outside.join(", ")}. Adjust before printing.</Alert>}
+                {layoutBar}
+              <div className="flex flex-wrap items-center gap-2 border-t border-border pt-2">
+                <Tick label="Add cheque to list" value={addToList} onChange={setAddToList} />
+                <span className="flex-1" />
+                <Button variant="secondary" disabled={!request || busy} title="Prints a sample with the cheque outline on plain paper" onClick={() => void testPrint()}>Test print</Button>
+                {advanced && <Button variant="secondary" disabled={outputDisabled} onClick={() => void output("dialog")}>Windows Print dialog</Button>}
+                {advanced && <Button variant="secondary" disabled={outputDisabled} onClick={() => void output("pdf")}>Cheque PDF</Button>}
+                <Button disabled={outputDisabled} title="Ctrl+P" onClick={() => void output("direct")}>Print cheque</Button>
+              </div>
+              {warnings.map((w) => <Alert key={w} tone="warn">{w}</Alert>)}
+              <p className="text-xs text-muted">
+                {addToList ? "After the cheque is printed it is added to the Cheque List as Pending, and the form is ready for the next cheque." : "Print only: this cheque is not added to the Cheque List."} Shortcuts: Ctrl+P print, Ctrl+N new cheque.
+              </p>
+              </Card>
+            </div>
+            <Card className="space-y-2">
+              <fieldset disabled={locked} className="m-0 min-w-0 space-y-2 border-0 p-0">
               <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2" role="group" aria-label="Move with arrow buttons">
                 <MoveRow label="All writing" aria="all" onMove={(dx, dy) => setCal((old) => ({ ...old, x: old.x + dx, y: old.y + dy }))} />
                 {MOVE_PARTS.filter((p) => p.id !== "bearer" || values.noBearer).map((p) => (
@@ -509,8 +619,10 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
                 ))}
               </div>
               <p className="text-xs text-muted">Each arrow moves 0.5 mm. Hold Shift to move 0.1 mm.</p>
+              </fieldset>
             </Card>
             <Card className="space-y-2">
+              <fieldset disabled={locked} className="m-0 min-w-0 space-y-2 border-0 p-0">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <Field label="Printer">
                   <Select
@@ -547,25 +659,14 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
                 </Field>}
               </div>
               {printersNote && <p className="text-xs text-muted">{printersNote} <button className="underline" onClick={() => void loadPrinters()}>Refresh printers</button></p>}
-              <div className="flex flex-wrap items-center gap-2 border-t border-border pt-2">
-                <Tick label="Add cheque to list" value={addToList} onChange={setAddToList} />
-                <span className="flex-1" />
-                <Button variant="secondary" disabled={!request || busy} title="Prints a sample with the cheque outline on plain paper" onClick={() => void testPrint()}>Test print</Button>
-                {advanced && <Button variant="secondary" disabled={outputDisabled} onClick={() => void output("dialog")}>Windows Print dialog</Button>}
-                {advanced && <Button variant="secondary" disabled={outputDisabled} onClick={() => void output("pdf")}>Cheque PDF</Button>}
-                <Button disabled={outputDisabled} title="Ctrl+P" onClick={() => void output("direct")}>Print cheque</Button>
-              </div>
-              {warnings.map((w) => <Alert key={w} tone="warn">{w}</Alert>)}
-              <p className="text-xs text-muted">
-                {addToList ? "After the cheque is printed it is added to the Cheque List as Pending, and the form is ready for the next cheque." : "Print only: this cheque is not added to the Cheque List."} Shortcuts: Ctrl+P print, Ctrl+N new cheque.
-              </p>
+              </fieldset>
               <Tick label="Show advanced options (wording, tray, calibration, PDF)" value={advanced} onChange={(v) => { setAdvanced(v); setPref("cw.advanced", v ? "1" : "0"); }} />
             </Card>
           </div>
         </div>
-        {advanced && <details className="rounded-xl border border-border bg-surface">
-          <summary className="cursor-pointer px-3 py-2 text-sm font-semibold">Calibration and text options</summary>
-          <div className="space-y-3 border-t border-border p-3">
+        {advanced && (
+          <div className="space-y-2">
+            <Group id="cw-cal" title="Calibration" defaultOpen={false} locked={locked}>
             <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-9">
               {([["width", "Width (mm)"], ["height", "Height (mm)"], ["font", "Font (pt)"], ["scale", "Scale (%)"], ["wrap", "Words line length"], ["x", "Offset X (mm)"], ["y", "Offset Y (mm)"], ["spacing", "Line spacing (mm)"], ["crossingShift", "Crossing shift (mm)"]] as const).map(([key, label]) => (
                 <Field key={key} label={label}>
@@ -573,12 +674,13 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
                 </Field>
               ))}
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button onClick={() => void saveCalibration()}>Save calibration</Button>
-              <Button variant="secondary" onClick={() => setCal((old) => ({ ...defaultCalibration(layoutId), printer: old.printer, tray: old.tray, orientation: old.orientation, feed: old.feed, offsets: old.offsets, text: old.text }))}>Zero offsets / defaults</Button>
-              <Tick label="Guides follow text offsets" value={followGuides} onChange={setFollowGuides} />
-              <Tick label="Lock the crossing lines together (the two lines and the A/C Payee text move as one piece)" value={cal.crossingLock !== false} onChange={(v) => setCalibration("crossingLock", v)} />
-            </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="secondary" onClick={() => setCal((old) => ({ ...defaultCalibration(layoutId), printer: old.printer, tray: old.tray, orientation: old.orientation, feed: old.feed, offsets: old.offsets, text: old.text }))}>Zero offsets / defaults</Button>
+                <Tick label="Guides follow text offsets" value={followGuides} onChange={setFollowGuides} />
+                <Tick label="Lock the crossing lines together (the two lines and the A/C Payee text move as one piece)" value={cal.crossingLock !== false} onChange={(v) => setCalibration("crossingLock", v)} />
+              </div>
+            </Group>
+            <Group id="cw-text" title="Text before and after" defaultOpen={false} locked={locked}>
             <div className="grid gap-3 md:grid-cols-3">
               <div className="space-y-2">
                 <h3 className="text-xs font-semibold">Payee</h3>
@@ -602,15 +704,41 @@ export function WriteTab({ onListChanged }: { onListChanged: () => void }) {
                 <Tick label="Wording in capital letters" value={cal.text.words_caps} onChange={(v) => setCalibration("text", { ...cal.text, words_caps: v })} />
               </div>
             </div>
+            </Group>
+            <Group id="cw-photo" title="Alignment photo" defaultOpen={false} locked={locked}>
             <div className="grid items-end gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
               <Field label="Blank cheque photo — alignment only (never printed)">
                 <Input aria-label="Blank cheque photo" type="file" accept="image/png,image/jpeg" onChange={(e) => { void photo(e.target.files?.[0]); e.target.value = ""; }} />
               </Field>
-              <Button variant="secondary" disabled={!layout?.background_image} onClick={() => void removePhoto()}>Remove photo</Button>
+              <Button variant="secondary" disabled={!layout?.background_image} onClick={removePhoto}>Remove photo</Button>
             </div>
+            </Group>
           </div>
-        </details>}
+        )}
       </fieldset>
+      {pending && (
+        <FormDialog
+          title="Unsaved layout settings"
+          onClose={() => setPending(null)}
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setPending(null)}>Keep editing</Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  const next = pending;
+                  setPending(null);
+                  next.run();
+                }}
+              >
+                Discard changes
+              </Button>
+            </>
+          }
+        >
+          <p>You changed layout settings that are not saved. Discard these changes?</p>
+        </FormDialog>
+      )}
     </div>
   );
 }

@@ -4,7 +4,7 @@ import test from "node:test";
 import { SceneCanvas, renderChequeFields, prepare } from "../shared/cheque-core.mjs";
 
 const BANK_LAYOUTS = JSON.parse(fs.readFileSync(new URL("../shared/bank-layouts.json", import.meta.url), "utf8"));
-const { crossingLocked, crossingMove, defaultCalibration, effectiveLayout, engineRequest, moveFields, resetCrossing, validateCalibration } = await import("../src/lib/cheque-writer-model.ts");
+const { crossingLocked, crossingMove, crossingStart, defaultCalibration, effectiveLayout, engineRequest, moveFields, resetCrossing, validateCalibration } = await import("../src/lib/cheque-writer-model.ts");
 
 const CROSSING = ["lnPayee1", "lnPayee2"];
 const values = { number: "000123", payee: "Example", amount: "10", date: "2026-10-26", blankDate: false, crossed: true, crossing: 1, noBearer: false, payeeCaps: false, style: "standard", wording: null };
@@ -84,4 +84,14 @@ test("a cheque with no move prints exactly as before (golden files stay valid)",
   const first = items.find((i) => i.k === "line");
   assert.equal(first.x1, 0);
   assert.equal(first.y1, 18.9);
+});
+
+test("a new cheque starts with CROSS ONLY, and a bank account keeps the crossing choice it was saved with", () => {
+  const fresh = defaultCalibration("ADCB");
+  assert.deepEqual(crossingStart(fresh), { crossed: true, crossing: 4, noBearer: false });
+  const kept = validateCalibration({ ...fresh, crossingDefaults: { crossed: false, crossing: 2, noBearer: true, extra: 1 } });
+  assert.deepEqual(kept.crossingDefaults, { crossed: false, crossing: 2, noBearer: true });
+  assert.deepEqual(crossingStart(kept), { crossed: false, crossing: 2, noBearer: true });
+  for (const bad of [{ crossed: "yes", crossing: 1, noBearer: false }, { crossed: true, crossing: 9, noBearer: false }, { crossed: true, crossing: 1 }, null])
+    assert.throws(() => validateCalibration({ ...fresh, crossingDefaults: bad }), /crossing/i);
 });

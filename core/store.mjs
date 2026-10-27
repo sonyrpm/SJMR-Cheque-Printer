@@ -17,6 +17,13 @@ import {
 const randomUUID = () => globalThis.crypto.randomUUID();
 const RESERVED = ["__proto__", "constructor", "prototype"];
 const MAX_CONFIG = 20 * 1024 * 1024;
+/** The crossing start choice saved with a calibration must be a real choice (or absent). */
+function checkCrossingDefaults(calibration) {
+  const d = calibration?.crossingDefaults;
+  if (d === undefined) return;
+  if (!d || typeof d.crossed !== "boolean" || typeof d.noBearer !== "boolean" || ![1, 2, 3, 4].includes(d.crossing))
+    throw new Error("Choose a valid crossing setting.");
+}
 
 const SCHEMA = `
 create table if not exists settings(key text primary key, value text not null);
@@ -144,8 +151,26 @@ export class ChequeStore {
         const account = await this.get("select id from accounts where id=?", data.bankId);
         if (!account || !Object.hasOwn(config.layouts, data.layoutId))
           throw new Error("Select a bank account and a saved layout.");
+        checkCrossingDefaults(data.calibration);
         const old = config.banks[data.bankId];
         config.banks[data.bankId] = { layoutId: data.layoutId, calibration: { ...old?.calibration, [data.layoutId]: data.calibration } };
+      } else if (data.kind === "all") {
+        // One save for everything of this bank account: the layout (measurements, name, photo) and the
+        // account's calibration (offsets, text, printer, tray, crossing start) go into the same record in one step.
+        const account = await this.get("select id from accounts where id=?", data.bankId);
+        if (!account) throw new Error("Select a bank account.");
+        const checked = validateLayouts({ [String(data.layout?.id)]: data.layout });
+        const entries = Object.entries(checked);
+        if (entries.length !== 1) throw new Error("Save one bank layout at a time.");
+        const [id, layout] = entries[0];
+        if (RESERVED.includes(id)) throw new Error("Choose a different bank layout ID; this name is reserved.");
+        const exists = Object.hasOwn(config.layouts, id);
+        if (data.isNew && exists) throw new Error("Choose a new layout ID.");
+        if (!data.isNew && !exists) throw new Error("This bank layout no longer exists. Reload.");
+        checkCrossingDefaults(data.calibration);
+        config.layouts[id] = layout;
+        const old = config.banks[data.bankId];
+        config.banks[data.bankId] = { layoutId: id, calibration: { ...old?.calibration, [id]: data.calibration } };
       } else if (data.kind === "layouts") {
         const checked = validateLayouts(data.layouts);
         for (const [id, layout] of Object.entries(checked)) {

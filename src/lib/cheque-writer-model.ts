@@ -35,6 +35,12 @@ export const TEXT_DEFAULTS: TextOptions = {
   words_suffix: "**",
   words_caps: true,
 };
+export type CrossingDefaults = { crossed: boolean; crossing: 1 | 2 | 3 | 4; noBearer: boolean };
+/** What a new cheque starts with: the saved choice of the bank account, else crossed with CROSS ONLY (two lines, no text). */
+export function crossingStart(cal: Pick<Calibration, "crossingDefaults">): CrossingDefaults {
+  const d = cal.crossingDefaults;
+  return d ? { crossed: d.crossed, crossing: d.crossing, noBearer: d.noBearer } : { crossed: true, crossing: 4, noBearer: false };
+}
 export type Calibration = {
   width: number;
   height: number;
@@ -47,6 +53,8 @@ export type Calibration = {
   crossingShift: number;
   /** The two crossing lines and the A/C Payee stamp move as one piece (default). Off = each line follows its own layout numbers. */
   crossingLock?: boolean;
+  /** Crossing choices this bank account starts every cheque with (saved with the layout settings). */
+  crossingDefaults?: CrossingDefaults;
   printer: string;
   tray: string;
   orientation: "Landscape" | "Portrait";
@@ -272,6 +280,12 @@ export function validateCalibration(input: Calibration): Calibration {
     if (typeof result[key] !== "string" || result[key].length > 300)
       throw new Error("Choose a valid printer and tray.");
   if (result.crossingLock !== undefined && typeof result.crossingLock !== "boolean") throw new Error("Choose a valid crossing setting.");
+  if (result.crossingDefaults !== undefined) {
+    const d = result.crossingDefaults;
+    if (!d || typeof d.crossed !== "boolean" || typeof d.noBearer !== "boolean" || ![1, 2, 3, 4].includes(d.crossing))
+      throw new Error("Choose a valid crossing setting.");
+    result.crossingDefaults = { crossed: d.crossed, crossing: d.crossing, noBearer: d.noBearer };
+  }
   if (Object.keys(result.offsets).length > 200) throw new Error("Too many field offsets.");
   for (const delta of Object.values(result.offsets))
     for (const value of [delta.left_mm, delta.top_mm])

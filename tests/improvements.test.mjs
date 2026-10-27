@@ -159,6 +159,17 @@ test("window: each field drags alone, Arabic cheque, test print, batch, undo, he
   await page.getByLabel("Cheque amount").fill("1250.50");
   await page.waitForTimeout(700);
 
+  // ---- the layout settings are locked every time the screen opens: no move, no drag area, no printer change
+  assert.equal(await page.getByRole("button", { name: "Move all right", exact: true }).isDisabled(), true, "the arrows are locked");
+  assert.equal(await page.getByLabel("Printer", { exact: true }).isDisabled(), true, "the printer choice is locked");
+  assert.equal(await page.locator("rect.cw-hit").count(), 0, "no drag areas while locked");
+  assert.equal(await page.getByRole("button", { name: "Save all layout settings" }).count(), 0);
+  assert.equal(await page.getByLabel("Cheque amount").isDisabled(), false, "writing the cheque is never locked");
+  await page.getByText("Layout locked", { exact: true }).first().waitFor();
+  assert.equal(await page.getByLabel("Security crossing").inputValue(), "4", "a new cheque starts as CROSS ONLY");
+  await page.getByRole("button", { name: "Unlock layout", exact: true }).click();
+  assert.equal(await page.getByRole("button", { name: "Save all layout settings" }).isDisabled(), true, "nothing changed yet");
+
   // ---- drag one field: the date moves, nothing else does
   const x = (field) => page.locator(`rect[data-field="${field}"]`).first().getAttribute("x").then(Number);
   const box = (field) => page.locator(`rect[data-field="${field}"]`).first().boundingBox();
@@ -221,6 +232,33 @@ test("window: each field drags alone, Arabic cheque, test print, batch, undo, he
   await page.waitForTimeout(700);
   assert.ok(await page.locator('rect[data-field="crossing"]').count(), "the two lines are still there");
   await h.shot("10b-cross-only");
+  // one save stores the layout and the calibration together (crossing start choice included), then the layout locks again
+  await page.getByLabel("Security crossing").selectOption("2");
+  await page.getByText("Layout unlocked · unsaved changes").waitFor();
+  await page.getByRole("button", { name: "Save all layout settings" }).click();
+  await page.getByText(/All layout settings saved for ADCB Main/).waitFor();
+  const saved = await h.store.config();
+  const bankId = Object.keys(saved.banks)[0];
+  const savedCal = saved.banks[bankId].calibration[saved.banks[bankId].layoutId];
+  assert.deepEqual(savedCal.crossingDefaults, { crossed: true, crossing: 2, noBearer: false }, "the crossing start choice is stored with the account");
+  assert.ok(Object.keys(savedCal.offsets).length > 0, "the moves are stored");
+  assert.equal(await page.getByRole("button", { name: "Move all right", exact: true }).isDisabled(), true, "locked again after saving");
+  await page.getByLabel("Security crossing").selectOption("4");
+  await page.waitForTimeout(400);
+  assert.ok(await page.locator('rect[data-field="crossing"]').count() === 0, "locked: no drag areas");
+  // discarding: an unsaved change asks first and Discard puts the saved values back
+  await page.getByRole("button", { name: "Unlock layout", exact: true }).click();
+  await page.getByLabel("Security crossing").selectOption("3");
+  await page.getByText("Layout unlocked · unsaved changes").waitFor();
+  await page.getByRole("button", { name: "Discard and lock", exact: true }).click();
+  await page.getByRole("dialog", { name: "Unsaved layout settings" }).waitFor();
+  await page.getByRole("button", { name: "Keep editing", exact: true }).click();
+  assert.equal(await page.getByLabel("Security crossing").inputValue(), "3");
+  await page.getByRole("button", { name: "Discard and lock", exact: true }).click();
+  await page.getByRole("button", { name: "Discard changes", exact: true }).click();
+  assert.equal(await page.getByLabel("Security crossing").inputValue(), "2", "the saved crossing start is back");
+  assert.equal(await page.getByRole("button", { name: "Move all right", exact: true }).isDisabled(), true);
+  await page.getByLabel("Security crossing").selectOption("4");
 
   // ---- Arabic cheque
   await page.getByLabel("Cheque language").selectOption("ar");
