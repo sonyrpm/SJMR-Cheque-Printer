@@ -1,35 +1,29 @@
-# Code signing policy
+# Windows files and code signing
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+**The Windows files are not code-signed.** Windows SmartScreen ("Windows protected your PC") and Chrome ("not commonly
+downloaded") may warn about them because the program is new and rarely downloaded. A signature is planned when a
+suitable certificate is available.
 
-This policy applies to the Windows files of **SJMR Cheque Writer**:
-`SJMR_Cheque_Writer_Setup.exe` (installer) and `SJMR_Cheque_Writer_Portable.exe`.
-The release files are signed once SignPath Foundation has approved this project. Until then they are published unsigned.
+This applies to `SJMR_Cheque_Writer_Setup.exe` (installer) and `SJMR_Cheque_Writer_Portable.exe`.
 
-## What is signed
+## How to check your download
 
-Only files built from the source code in this repository, by the GitHub Actions workflow
-`.github/workflows/release-windows.yml` on the `main` branch. Nothing is built or signed on a personal computer.
-The program is released under the [MIT license](LICENSE). It contains no closed-source component.
+Compare the SHA-256 of the file with the value on https://get.sjmrsoft.com/cheque
+(PowerShell: `Get-FileHash .\SJMR_Cheque_Writer_Setup.exe`). If the values are equal, it is the file that was published.
 
-## Roles
+## Source
 
-| Role | Person |
-|---|---|
-| Committers and reviewers | The maintainer, [sonyrpm](https://github.com/sonyrpm) |
-| Approver of every signing request | The maintainer, [sonyrpm](https://github.com/sonyrpm) |
-
-The project has one maintainer. Every release run is approved by hand in the GitHub
-`production` environment before it can publish or sign.
+The program is released under the [MIT license](LICENSE) and contains no closed-source component. The files are built
+from the source code in this repository (the GitHub Actions workflow `.github/workflows/release-windows.yml`, or the
+maintainer's own build script, which follows the same checks) and published by the maintainer.
 
 ## Privacy
 
-This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
-
+This program does not send information to other networked systems unless the user asks for it.
 The only network use is the first start of a computer that has no Microsoft Edge WebView2 runtime:
 the program then offers to download that runtime from Microsoft. The cheque data stays on your own computer,
 in the `SJMR Cheque Writer Data` folder (portable) or in `%APPDATA%\SJMR Cheque Writer\data` (installed).
 
 ## Contact
 
-Questions about this policy or a security problem: info@sjmrsoft.com (see [SECURITY.md](SECURITY.md)).
+Questions or a security problem: info@sjmrsoft.com (see [SECURITY.md](SECURITY.md)).

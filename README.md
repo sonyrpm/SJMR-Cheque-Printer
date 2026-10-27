@@ -82,7 +82,9 @@ Windows print helpers), `src/` (the window), `tests/`.
 Windows printing (tray, orientation, print dialog) goes through `shared/direct/cheque-direct.ps1`, which compiles
 `ChequeDirectPrinter.cs` inside Windows PowerShell: there is no second program to install.
 
-## Code signing
+## Windows files and signing
 
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
-See the [code signing policy](CODE-SIGNING.md). The program is open source under the [MIT license](LICENSE).
+The Windows files (`SJMR_Cheque_Writer_Setup.exe` and `SJMR_Cheque_Writer_Portable.exe`) are **not code-signed yet**, so
+Windows SmartScreen or Chrome may warn about a new, rarely downloaded file. Compare the SHA-256 of your download with
+the one on the download page (https://get.sjmrsoft.com/cheque). See [CODE-SIGNING.md](CODE-SIGNING.md).
+The program is open source under the [MIT license](LICENSE).
